@@ -151,7 +151,7 @@ class Pie(pl.LightningModule):
         char, clen, wlen = x
 
         # Embedding
-        emb, cemb_outs = self.embedding(wlen, char, clen)
+        emb, cemb_outs = self._embedding(char, clen, wlen)
 
         # Encoder
         emb = F.dropout(emb, p=self.dropout, training=self.training)
@@ -160,7 +160,7 @@ class Pie(pl.LightningModule):
         if isinstance(self.decoder, AttentionalDecoder):
             cemb_outs = F.dropout(cemb_outs, p=self.dropout, training=self.training)
             context = flatten_padded_batch(cemb_outs, wlen)
-            logits = self.decoder(encoded=enc_outs, length=clen, context=context)
+            logits = self.decoder(enc_outs=enc_outs, length=clen, context=context)
         else:
             logits = self.decoder(encoded=enc_outs)
 
@@ -173,11 +173,11 @@ class Pie(pl.LightningModule):
                     enc_outs[0], p=0, training=self.training
                 ).chunk(2, dim=2)
                 # forward logits
-                lm_fwd = self.lm_fwd_decoder(torch_utils.pad(fwd[:-1], pos='pre'))
+                lm_fwd = self.lm_fwd_decoder(pad(fwd[:-1], pos='pre'))
                 # backward logits
                 lm_bwd = self.lm_bwd_decoder.loss(logits, word)
 
-        return {"logits": logits, "lm_fwd": lm_fwd, "lm_bwd": lm_bwd}
+        return {"decoded": logits, "lm_fwd": lm_fwd, "lm_bwd": lm_bwd}
 
     def predict(self, inp, *tasks, return_probs=False,
                 use_beam=False, beam_width=10, **kwargs):

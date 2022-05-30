@@ -1,3 +1,4 @@
+from typing import List, Tuple, Optional
 import torch
 from torch import nn as nn
 from torch.nn.utils.rnn import pad_packed_sequence, pack_padded_sequence
@@ -72,100 +73,144 @@ class AttentionalDecoder(nn.Module):
         # linear
         initialization.init_linear(self.proj)
 
-    def forward(self, targets, lengths, enc_outs, src_lengths, context=None):
+    def forward(
+            self,
+            enc_outs,
+            lengths,
+            max_seq_len=20,
+            bos=None,
+            eos=None,
+            context=None) -> Tuple[Optional[torch.Tensor], List[Tuple[int]], List[float]]:
         """
-        Decoding routine for training. Returns the logits corresponding to
-        the targets for the `loss` method. Takes care of padding.
-        """
-        targets, lengths = targets[:-1], lengths - 1
-        embs = self.embs(targets)
+         Decoding routine for inference with step-wise argmax procedure
+         Parameters
+         ===========
+         enc_outs : tensor(src_seq_len x batch x hidden_size)
+         context : tensor(batch x hidden_size), optional
 
-        if self.context_dim > 0:
-            if context is None:
-                raise ValueError("Contextual Decoder needs `context`")
-            # (seq_len x batch x emb_dim) + (batch x context_dim)
-            embs = torch.cat(
-                [embs, context.unsqueeze(0).repeat(embs.size(0), 1, 1)],
-                dim=2)
-
-        embs, unsort = pack_padded_sequence(embs, lengths, enforce_sorted = False)
-
-        outs, _ = self.rnn(embs)
-        outs, _ = pad_packed_sequence(outs)
-        outs = outs[:, unsort]
-
-        context, _ = self.attn(outs, enc_outs, src_lengths)
-
-        return self.proj(context)
-
-    def loss(self, logits, targets):
-        """
-        Compute loss from logits (output of forward)
-
-        Parameters
-        ===========
-        logits : tensor(seq_len x batch x vocab)
-        targets : tensor(seq_len x batch)
-        """
-        targets = targets[1:]  # remove <bos> from targets
-
-        loss = F.cross_entropy(
-            logits.view(-1, len(self.label_encoder)), targets.view(-1),
-            weight=self.nll_weight, reduction="mean",
-            ignore_index=self.label_encoder.get_pad())
-
-        print(logits.view(-1, len(self.label_encoder)).size())
-        print(targets.view(-1).size())
-        raise Exception
-        # FIXME: normalize loss to be word-level
-
-        return loss
-
-    def predict_max(self, enc_outs, lengths,
-                    max_seq_len=20, bos=None, eos=None,
-                    context=None):
-        """
-        Decoding routine for inference with step-wise argmax procedure
-
-        Parameters
-        ===========
-        enc_outs : tensor(src_seq_len x batch x hidden_size)
-        context : tensor(batch x hidden_size), optional
-        """
-        eos = eos or self.eos
-        bos = bos or self.bos
+         :returns: Raw linear output per char, ?, ?
+         """
+        eos = eos or self.label_encoder.get_eos()
+        bos = bos or self.label_encoder.get_bos()
         hidden, batch, device = None, enc_outs.size(1), enc_outs.device
-        mask = torch.ones(batch, dtype=torch.int64, device=device)
         inp = torch.zeros(batch, dtype=torch.int64, device=device) + bos
-        hyps, scores = [], 0
+        hyps: List[Tuple[int]] = []
+        final_scores = torch.tensor([0 for _ in range(batch)], dtype=torch.float64, device="cpu")
+
+        # To make a "character" level loss, we'll append to a loss matrix each probs
+        #  It necessarily starts with <BOS>
+        loss_matrix_probs: Optional[torch.Tensor] = None
+
+        # As we go, we'll reduce the tensor size by popping finished prediction
+        #  To keep adding new characters to the right words, we
+        #  store and keep updated a Tensor where Tensor Index -> Batch Original ID
+        #  where Batch Original ID is the Word ID (batch_size = number of words)
+        tensor_to_original_batch_indexes = torch.tensor(
+            list(range(batch)),
+            dtype=torch.int64,
+            device=device
+        )  # Tensor(batch_size)
 
         for _ in range(max_seq_len):
-            if mask.sum().item() == 0:
-                break
 
-            # prepare input
-            emb = self.embs(inp)
+            # Prepare input
+            #    Context is NEVER changed after the method has been called
+            emb = self.embs(inp)  # Tensor(batch_size x emb_size)
             if context is not None:
-                emb = torch.cat([emb, context], dim=1)
-            # run rnn
-            emb = emb.unsqueeze(0)
+                emb = torch.cat([emb, context], dim=1)  # Tensor(batch_size x (emb_size+context_size))
+
+            # Run rnn
+            emb = emb.unsqueeze(0)  # Tensor(1 x batch_size x emb size(+context))
+
+            # hidden is gonna be reused by the next iteration
+            #   outs is specific to the current run
             outs, hidden = self.rnn(emb, hidden)
+            # Hidden : Tensor(1 x batch_size x emb_size)
+
             outs, _ = self.attn(outs, enc_outs, lengths)
             outs = self.proj(outs).squeeze(0)
-            # get logits
+
+            # Get logits
             probs = F.log_softmax(outs, dim=1)
-            # sample and accumulate
-            score, inp = probs.max(1)
-            hyps.append(inp.tolist())
-            mask = mask * (inp != eos).long()
-            score = score.cpu()
-            score[mask == 0] = 0
-            scores += score
 
-        hyps = [self.label_encoder.stringify(hyp) for hyp in zip(*hyps)]
-        scores = [s/(len(hyp) + TINY) for s, hyp in zip(scores.tolist(), hyps)]
+            # Sample and accumulate
+            #  Score are the probabilities
+            #  Inp are the new characters (as int) we are adding to our predictions
+            score, inp = probs.max(1)  # (Tensor(batch_size, dtype=float), Tensor(batch_size, dtype=int))
 
-        return hyps, scores
+            # We create a mask of value that are not ending the string
+            non_eos = (inp != eos)  # Tensor(batch_size, dtype=bool)
+
+            # Using this mask, we retrieve the Indexes of items that are not EOS
+            #  nonzero() returns a 2D Tensor where each row is an index
+            #  not equal to 0. It can be use as a (mask) selector for other tensors (see below)
+            keep = torch.nonzero(non_eos).squeeze(1)  # Tensor(dtype=int)
+
+            # We prepare a sequence output made of EOS which we'll fill with predictions
+            #   torch.full() takes size as tuple for first argument, filling value as second
+            seq_output = torch.full((batch,), eos, device=device, dtype=torch.int64)
+
+            # We replace the value at indexes *tensor_to_original_batch_indexes* by the prediction
+            #   of current sequence output
+            seq_output[tensor_to_original_batch_indexes] = inp
+
+            # If we are training, we also set-up the same thing for the loss_matrix_probs
+            if self.training:
+                in_loop_loss = torch.full(
+                    (batch, self.tokenizer.get_vocab_size()),
+                    .0,
+                    device=device
+                )
+                in_loop_loss[tensor_to_original_batch_indexes] = outs
+                if loss_matrix_probs is None:
+                    # We add a dimension at the "Word" level
+                    loss_matrix_probs = in_loop_loss.unsqueeze(1)
+                else:
+                    loss_matrix_probs = torch.cat([loss_matrix_probs, in_loop_loss])
+
+            # We set the score where we have EOS predictions as 0
+            score[inp == eos] = 0
+            # So that we can add the score to finale scores
+            final_scores[tensor_to_original_batch_indexes] += score.cpu()
+
+            # We add this new output to the final hypothesis
+            hyps.append(seq_output.tolist())
+
+            # If there nothing else than EOS, it's the end of the prediction time
+            if non_eos.sum() == 0:
+                break
+
+            # Otherwise, we update the tensor_to_batch_indexes by transferring
+            #   the current associated index with the new indexes
+            tensor_to_original_batch_indexes = tensor_to_original_batch_indexes[keep]
+
+            # We use the Tensor of indexes that are not EOS to filter out
+            #   Elements of the batch that are EOS.
+            #   inp, context, lengths are all Tensor(batch_size x ....)
+            #   so we filter them at the first dimension
+            inp = inp[keep]
+            context = context[keep]
+            lengths = lengths[keep]
+
+            # However, hidden is 3D (Tensor(1 x batch_size x _)
+            #   So we filter at the second dimension directly
+            if isinstance(hidden, tuple):  # LSTM
+                hidden = tuple([hid[:, keep, :] for hid in hidden])
+            else:  # GRU
+                hidden = hidden[:, keep, :]
+
+            # enc_outs is Tensor(max_seq_len x batch x hidden_size)
+            #   Seq_len is supposed to be equal to max(lengths),
+            #     but if the maximum length is popped, it is not in sync anymore.
+            #   In order to keep wording, we remove extra dimension if lengths.max() has changed.
+            # We then update the first (max_seq_len) and second (batch_size) dimensions accordingly.
+            max_seq_len = lengths.max()
+            enc_outs = enc_outs[:max_seq_len, keep, :]
+
+        hyps = [hyp for hyp in zip(*hyps)]
+        final_scores = [s / (len(hyp) + TINY) for s, hyp in zip(final_scores, hyps)]
+
+        return loss_matrix_probs, hyps, final_scores
 
 
 def sequential_dropout(inp: torch.Tensor, p: float, training: bool):
