@@ -18,6 +18,8 @@ class GroundTruthDataset(Dataset):
         self.categorical: bool = categorical
         self.annotations: List[List[Tuple[str, str]]] = list(self._read())
         self.pad_index = self.tokenizer.token_to_id("[PAD]")
+        self.bos_index = self.tokenizer.token_to_id("[BOS]")
+        self.eos_index = self.tokenizer.token_to_id("[EOS]")
 
     def _read(self):
         if self.annotation_file.endswith(".tsv"):
@@ -25,8 +27,12 @@ class GroundTruthDataset(Dataset):
         raise ValueError("Unsupported data format")
 
     def tokenized_to_output(self, data: Encoding):
-        grouped_subwords = get_word_groups(data)
-        return data.ids, len(data.ids), grouped_subwords, [len(grouped) for grouped in grouped_subwords]
+        grouped_subwords = get_word_groups(data, bos=self.bos_index, eos=self.eos_index)
+        return (
+            (data.ids, len(data.ids)),
+            # ToDo: Should we add EOS everytime ?
+            (grouped_subwords, [len(grouped) for grouped in grouped_subwords])
+        )
 
     @staticmethod
     def _read_tsv(filepath, task):
@@ -57,7 +63,7 @@ class GroundTruthDataset(Dataset):
             raise NotImplementedError
         else:
             annots = self.tokenizer.encode(tasks, is_pretokenized=True)
-            return self.tokenized_to_output(forms),  self.tokenized_to_output(annots)
+            return self.tokenized_to_output(forms), self.tokenized_to_output(annots)
 
     def train_collate_fn(self, batch):
         """
