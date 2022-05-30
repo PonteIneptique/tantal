@@ -130,8 +130,8 @@ class Pie(pl.LightningModule):
         return emb, outs
 
     def proj(self, x: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]):
-        # tensor(length, batch_size * words)
         # tensor(length, batch_size)
+        # tensor(length, batch_size * words)
         flat_subwords, fsw_len, grouped_subwords, gsw_len = x
 
         # Embedding

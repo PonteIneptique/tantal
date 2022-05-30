@@ -30,9 +30,34 @@ class GroundTruthDataset(Dataset):
         grouped_subwords = get_word_groups(data, bos=self.bos_index, eos=self.eos_index)
         return (
             (data.ids, len(data.ids)),
-            # ToDo: Should we add EOS everytime ?
             (grouped_subwords, [len(grouped) for grouped in grouped_subwords])
         )
+
+    def pad_batch(self, x):
+        """
+
+        :info: Padded with value first, batch last
+        """
+        flat_subwords, fsw_len, grouped_subwords, gsw_len = zip(x)
+        # torch.Tensor(Sequence Length * Batch Size)
+        flat_subwords = pad_sequence(
+            sequences=[torch.tensor(sw, dtype=torch.int8) for sw in flat_subwords],
+            padding_value=self.pad_index
+        )
+        # torch.Tensor(Max word length, Sum(Word Count in Batch))
+        # -> First dimension is the maximum word length
+        # -> Second dimension is how many word there are in total in the batch
+        grouped_subwords = pad_sequence(
+            sequences=[
+                torch.tensor(sw, dtype=torch.int8)
+                for sentence_subwords in grouped_subwords
+                for sw in sentence_subwords
+            ],
+            padding_value=self.pad_index
+        )
+        return flat_subwords, torch.tensor(fsw_len, dtype=torch.int8), grouped_subwords, torch.tensor([
+            token_length for sentence_level in gsw_len for token_length in sentence_level
+        ])
 
     @staticmethod
     def _read_tsv(filepath, task):
@@ -70,18 +95,5 @@ class GroundTruthDataset(Dataset):
         DataLoaderBatch should be a list of (sequence, target, length) tuples...
         Returns a padded tensor of sequences sorted from longest to shortest,
         """
-        # ToDo
-        x, x_length, y, y_length, _ = list(zip(*sorted(batch, key=itemgetter(1), reverse=True)))
-        return (
-            pad_sequence(
-                [torch.tensor(x_i) for x_i in x],
-                padding_value=self.pad_index,
-                batch_first=True
-            ),
-            torch.tensor(x_length),
-            pad_sequence(
-                [torch.tensor(y_i) for y_i in y],
-                padding_value=self.pad_index,
-                batch_first=True
-            )
-        )
+        x, y = batch
+        return self.pad_batch(x), self.pad_batch(y)
