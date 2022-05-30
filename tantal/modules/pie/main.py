@@ -3,11 +3,11 @@ import torch
 from tokenizers import Tokenizer
 from torch.nn import functional as F
 import torch.nn as nn
-from typing import Tuple
+from typing import Tuple, Any
 
 from tantal.modules.pie.decoder import LinearDecoder, RNNEncoder, AttentionalDecoder
 from tantal.modules import initialization
-from tantal.modules.pie.utils import pad_flat_batch, flatten_padded_batch
+from tantal.modules.pie.utils import pad_flat_batch, flatten_padded_batch, pad
 
 
 class Pie(pl.LightningModule):
@@ -88,6 +88,13 @@ class Pie(pl.LightningModule):
             )
 
         self.lm_fwd_decoder = LinearDecoder(tokenizer.get_vocab_size(), hidden_size)
+        self.lm_bwd_decoder = self.lm_fwd_decoder
+
+        self._weights = {
+            "annotation": 1.0,
+            "lm_fwd": 1.0,
+            "lm_bwd": 1.0
+        }
 
     def _embedding(self, char, clen, wlen):
         """ A mix of embedding.RNNEmbedding and Word Embedding
@@ -122,115 +129,87 @@ class Pie(pl.LightningModule):
 
         return emb, outs
 
-    def init_from_encoder(self, encoder):
-        # wemb
-        total = 0
-        for w, idx in encoder.label_encoder.word.table.items():
-            if w in self.label_encoder.word.table:
-                self.wemb.weight.data[self.label_encoder.word.table[w]].copy_(
-                    encoder.wemb.weight.data[idx])
-                total += 1
-        print("Initialized {}/{} word embs".format(total, len(self.wemb.weight)))
-        # cemb
-        total = 0
-        for w, idx in encoder.label_encoder.char.table.items():
-            if w in self.label_encoder.char.table:
-                self.cemb.emb.weight.data[self.label_encoder.char.table[w]].copy_(
-                    encoder.cemb.emb.weight.data[idx])
-                total += 1
-        print("Initialized {}/{} char embs".format(total, len(self.cemb.emb.weight)))
-        # cemb rnn
-        self.cemb.rnn.load_state_dict(encoder.cemb.rnn.state_dict())
-        # sentence rnn
-        self.encoder.load_state_dict(encoder.encoder.state_dict())
-
-        if self.include_lm:
-            pass
-
-    def forward(self, x: Tuple[torch.Tensor, torch.Tensor, torch.Tensor]):
-        char, clen, wlen = x
+    def proj(self, x: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]):
+        # tensor(length, batch_size * words)
+        # tensor(length, batch_size)
+        flat_subwords, fsw_len, grouped_subwords, gsw_len = x
 
         # Embedding
-        emb, cemb_outs = self._embedding(char, clen, wlen)
+        emb, cemb_outs = self._embedding(grouped_subwords, gsw_len, fsw_len)
 
         # Encoder
         emb = F.dropout(emb, p=self.dropout, training=self.training)
-        enc_outs = self.encoder(emb, wlen)
+        enc_outs = self.encoder(emb, fsw_len)
 
         if isinstance(self.decoder, AttentionalDecoder):
             cemb_outs = F.dropout(cemb_outs, p=self.dropout, training=self.training)
-            context = flatten_padded_batch(cemb_outs, wlen)
-            logits = self.decoder(enc_outs=enc_outs, length=clen, context=context)
+            context = flatten_padded_batch(cemb_outs, fsw_len)
+            logits = self.decoder(enc_outs=enc_outs, length=gsw_len, context=context)
         else:
             logits = self.decoder(encoded=enc_outs)
 
+        return logits, emb, enc_outs
+
+    def common_train_val_step(self, batch, batch_idx):
+        x, (flat_subwords, fsw_len, grouped_subwords, gsw_len) = batch
+
+        emb, enc_outs, dec_out = self.proj(x)
+
+        # Decoder loss
+        losses = {
+            "loss_annotation": F.cross_entropy(
+                dec_out,
+                grouped_subwords,
+                ignore_index=self._tokenizer.token_to_id("[PAD]"),
+                reduction=self.reduction,
+                label_smoothing=self.label_smoothing
+            )
+        }
+
         # (LM)
-        lm_fwd, lm_bwd = None, None
-        if self.training:
-            if len(emb) > 1:  # can't compute loss for 1-length batches
-                # always at first layer
-                fwd, bwd = F.dropout(
-                    enc_outs[0], p=0, training=self.training
-                ).chunk(2, dim=2)
-                # forward logits
-                lm_fwd = self.lm_fwd_decoder(pad(fwd[:-1], pos='pre'))
-                # backward logits
-                lm_bwd = self.lm_bwd_decoder.loss(logits, word)
+        if len(emb) > 1:  # can't compute loss for 1-length batches
+            # always at first layer
+            fwd, bwd = F.dropout(
+                enc_outs[0], p=0, training=self.training
+            ).chunk(2, dim=2)
+            # forward logits
+            lm_fwd = self.lm_fwd_decoder(pad(fwd[:-1], pos='pre'))
+            losses["loss_lm_fwd"] = F.cross_entropy(
+                lm_fwd.view(-1, self._tokenizer.get_vocab_size()),
+                flat_subwords.view(-1),
+                weight=self.nll_weight,
+                reduction="mean",
+                ignore_index=self._tokenizer.token_to_id("[PAD]")
+            )
+            # backward logits
+            lm_bwd = self.lm_bwd_decoder(pad(bwd[1:], pos='post'))
+            losses["loss_lm_bwd"] = F.cross_entropy(
+                lm_bwd.view(-1, self._tokenizer.get_vocab_size()),
+                flat_subwords.view(-1),
+                weight=self.nll_weight,
+                reduction="mean",
+                ignore_index=self._tokenizer.token_to_id("[PAD]")
+            )
 
-        return {"decoded": logits, "lm_fwd": lm_fwd, "lm_bwd": lm_bwd}
+        loss = sum([
+            self._weights.get(k[5:], 1) * losses[k]
+            for k in losses
+        ])
+        return dec_out, loss
 
-    def predict(self, inp, *tasks, return_probs=False,
-                use_beam=False, beam_width=10, **kwargs):
-        """
-        inp : (word, wlen), (char, clen), text input
-        tasks : list of str, target tasks
-        """
-        tasks = set(self.tasks if not len(tasks) else tasks)
-        preds, probs = {}, {}
-        (word, wlen), (char, clen) = inp
+    def forward(self, batch, batch_idx):
+        return self.proj(batch)[-1]
 
-        # Embedding
-        emb, (wemb, cemb, cemb_outs) = self.embedding(word, wlen, char, clen)
+    def training_step(self, batch, batch_idx):
+        _, loss = self.common_train_val_step(batch, batch_idx)
+        self.log("train_loss", loss)
+        return loss
 
-        # Encoder
-        enc_outs = None
-        if self.encoder is not None:
-            # TODO: check if we need encoder for this particular batch
-            enc_outs = self.encoder(emb, wlen)
+    def validation_step(self, batch, batch_idx):
+        dec_out, loss = self.common_train_val_step(batch, batch_idx)
+        self.log("dev_loss", loss)
+        return loss
 
-        # Decoders
-        for task in tasks:
-
-            decoder, at_layer = self.decoders[task], self.tasks[task]['layer']
-            outs = None
-            if enc_outs is not None:
-                outs = enc_outs[at_layer]
-
-            if self.label_encoder.tasks[task].level.lower() == 'char':
-                if isinstance(decoder, LinearDecoder):
-                    hyps, prob = decoder.predict(cemb_outs, clen)
-                elif isinstance(decoder, CRFDecoder):
-                    hyps, prob = decoder.predict(cemb_outs, clen)
-                else:
-                    context = get_context(outs, wemb, wlen, self.tasks[task]['context'])
-                    if use_beam:
-                        hyps, prob = decoder.predict_beam(
-                            cemb_outs, clen, width=beam_width, context=context)
-                    else:
-                        hyps, prob = decoder.predict_max(
-                            cemb_outs, clen, context=context)
-                    if self.label_encoder.tasks[task].preprocessor_fn is None:
-                        hyps = [''.join(hyp) for hyp in hyps]
-            else:
-                if isinstance(decoder, LinearDecoder):
-                    hyps, prob = decoder.predict(outs, wlen)
-                elif isinstance(decoder, CRFDecoder):
-                    hyps, prob = decoder.predict(outs, wlen)
-
-            preds[task] = hyps
-            probs[task] = prob
-
-        if return_probs:
-            return preds, probs
-
-        return preds
+    def configure_optimizers(self):
+        optimizer = torch.optim.Adam(self.parameters(), lr=1e-3)
+        return optimizer

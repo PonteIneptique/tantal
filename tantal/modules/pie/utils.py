@@ -28,6 +28,24 @@ def flatten_padded_batch(batch, nwords):
         return torch.cat(output, dim=0)
 
 
+def pad(batch, pad_value=0, pos='pre'):
+    """
+    >>> batch = torch.tensor([[1, 1], [2, 2], [3, 3], [4, 4]])
+    >>> pad(batch, pad=-1, pos='pre').tolist()
+    [[-1, -1], [1, 1], [2, 2], [3, 3], [4, 4]]
+    >>> pad(batch, pad=5, pos='post').tolist()
+    [[1, 1], [2, 2], [3, 3], [4, 4], [5, 5]]
+    """
+    if pos.lower() == 'pre':
+        padding = (0, 0) * (batch.dim() - 1) + (1, 0)
+    elif pos.lower() == 'post':
+        padding = (0, 0) * (batch.dim() - 1) + (0, 1)
+    else:
+        raise ValueError("Unknown value for pos: {}".format(pos))
+
+    return F.pad(batch, padding, value=pad_value)
+
+
 def pad_flat_batch(emb, nwords, maxlen=None):
     """
     Transform a 2D flat batch (batch of words in multiple sentences) into a 3D
