@@ -70,7 +70,7 @@ class Pie(pl.LightningModule):
 
         # Decoders
         self.decoder = None
-        if categorical:
+        if not categorical:
             self.decoder = AttentionalDecoder(
                 tokenizer=tokenizer,
                 in_dim=cemb_dim * 2,
@@ -133,29 +133,35 @@ class Pie(pl.LightningModule):
 
         return emb, outs
 
-    def proj(self, x: Tuple[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor]]):
+    def proj(self, x: Tuple[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]):
         # tensor(length, batch_size)
         # tensor(length, batch_size * words)
-        ((flat_subwords, fsw_len), (grouped_subwords, gsw_len)) = x
+        ((flat_subwords, fsw_len), (grouped_subwords, gsw_len, nbwords)) = x
 
         # Embedding
-        emb, cemb_outs = self._embedding(grouped_subwords, gsw_len, fsw_len)
+        # emb: torch.Size([Max(NBWords), BatchSize, 2*Character Embedding Dim])
+        # cemb_outs: torch.Size([MaxSubWordCount(Words), Sum(NBWords), 2*Character Embedding Dim])
+        emb, encoded_words = self._embedding(grouped_subwords, gsw_len, nbwords)
 
         # Encoder
         emb = F.dropout(emb, p=self.dropout, training=self.training)
-        enc_outs = self.encoder(emb, fsw_len)
-
+        # enc_outs: torch.Size([Max(NBWords), BatchSize, NBLayers*HiddenSize])
+        encoded_sentences = self.encoder(emb, nbwords)
+        # get_context(outs, wemb, wlen, self.tasks[task]['context'])
         if isinstance(self.decoder, AttentionalDecoder):
-            cemb_outs = F.dropout(cemb_outs, p=self.dropout, training=self.training)
-            context = flatten_padded_batch(cemb_outs, fsw_len)
-            logits = self.decoder(enc_outs=enc_outs, length=gsw_len, context=context)
+            # cemb_outs = F.dropout(cemb_outs, p=self.dropout, training=self.training)
+            # context: torch.Size([Batch Size * Max Length, 2 * Hidden Size]) <--- PROBLEM
+            single_encoded_sentence = flatten_padded_batch(encoded_sentences[-1], nbwords)
+            # Use last layer enc_outs[-1]
+            logits = self.decoder(encoded_words=encoded_words, lengths=nbwords,
+                                  encoded_sentence=single_encoded_sentence)
         else:
-            logits = self.decoder(encoded=enc_outs)
+            logits = self.decoder(encoded=encoded_sentences)
 
-        return logits, emb, enc_outs
+        return logits, emb, encoded_sentences
 
     def common_train_val_step(self, batch, batch_idx):
-        x, ((flat_subwords, fsw_len), (grouped_subwords, gsw_len)) = batch
+        x, ((flat_subwords, fsw_len), (grouped_subwords, gsw_len, nb_words)) = batch
 
         emb, enc_outs, dec_out = self.proj(x)
 

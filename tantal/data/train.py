@@ -30,7 +30,7 @@ class GroundTruthDataset(Dataset):
         grouped_subwords = get_word_groups(data, bos=self.bos_index, eos=self.eos_index)
         return (
             (data.ids, len(data.ids)),
-            (grouped_subwords, [len(grouped) for grouped in grouped_subwords])
+            (grouped_subwords, [len(grouped) for grouped in grouped_subwords], len(grouped_subwords))
         )
 
     def pad_batch(self, x):
@@ -38,11 +38,12 @@ class GroundTruthDataset(Dataset):
 
         :info: Padded with value first, batch last
         """
-        print(x)
-        (flat_subwords, fsw_len), (grouped_subwords, gsw_len) = x
+        flat_subwords, grouped_subwords = zip(*x)
+        (flat_subwords, fsw_len) = zip(*flat_subwords)
+        (grouped_subwords, gsw_len, nb_words) = zip(*grouped_subwords)
         # torch.Tensor(Sequence Length * Batch Size)
         flat_subwords = pad_sequence(
-            sequences=[torch.tensor(sw, dtype=torch.int8) for sw in flat_subwords],
+            sequences=[torch.tensor(sw, dtype=torch.int) for sw in flat_subwords],
             padding_value=self.pad_index
         )
         # torch.Tensor(Max word length, Sum(Word Count in Batch))
@@ -50,15 +51,22 @@ class GroundTruthDataset(Dataset):
         # -> Second dimension is how many word there are in total in the batch
         grouped_subwords = pad_sequence(
             sequences=[
-                torch.tensor(sw, dtype=torch.int8)
+                torch.tensor(sw, dtype=torch.int)
                 for sentence_subwords in grouped_subwords
                 for sw in sentence_subwords
             ],
             padding_value=self.pad_index
         )
-        return flat_subwords, torch.tensor(fsw_len, dtype=torch.int8), grouped_subwords, torch.tensor([
-            token_length for sentence_level in gsw_len for token_length in sentence_level
-        ])
+        return (
+            (flat_subwords, torch.tensor(fsw_len, dtype=torch.int)),
+            (
+                grouped_subwords,
+                torch.tensor([
+                    token_length for sentence_level in gsw_len for token_length in sentence_level
+                ], dtype=torch.int),
+                torch.tensor(nb_words, dtype=torch.int)
+            )
+        )
 
     @staticmethod
     def _read_tsv(filepath, task):

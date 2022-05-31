@@ -19,7 +19,7 @@ if not os.path.exists(TOKENIZER_PATH):
 else:
     tokenizer = Tokenizer.from_file(TOKENIZER_PATH)
 
-model = Pie(tokenizer, cemb_dim=50, cemb_layers=1, hidden_size=100, num_layers=2)
+model = Pie(tokenizer, cemb_dim=50, cemb_layers=1, hidden_size=128, num_layers=2)
 train_dataset = GroundTruthDataset(TRAIN_FILE, task="lemma", tokenizer=tokenizer)
 train_loader = DataLoader(
     train_dataset,
@@ -29,7 +29,8 @@ train_loader = DataLoader(
 dev_dataset = GroundTruthDataset(DEV_FILE, task="lemma", tokenizer=tokenizer)
 dev_loader = DataLoader(
     dev_dataset,
-    collate_fn=dev_dataset.collate_fn
+    collate_fn=dev_dataset.collate_fn,
+    batch_size=4
 )
 trainer = pl.Trainer(gpus=1)
 trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=dev_loader)
