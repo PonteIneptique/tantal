@@ -105,20 +105,20 @@ class Pie(pl.LightningModule):
 
         :returns: Embedding projections and Inside-Word level Encoded Embeddings
         """
-        char = self.emb(char)
+        char = self.embedding(char)
         # rnn
         hidden = None
         _, sort = torch.sort(clen, descending=True)
         _, unsort = sort.sort()
         char, nchars = char[:, sort], clen[sort]
-        if isinstance(self.rnn, nn.RNNBase):
-            outs, emb = self.rnn(
+        if isinstance(self.embedding_ngram_encoder, nn.RNNBase):
+            outs, emb = self.embedding_ngram_encoder(
                 nn.utils.rnn.pack_padded_sequence(char, nchars.cpu()), hidden)
             outs, _ = nn.utils.rnn.pad_packed_sequence(outs)
             if isinstance(emb, tuple):
                 emb, _ = emb
         else:
-            outs, (emb, _) = self.rnn(char, hidden, nchars)
+            outs, (emb, _) = self.embedding_ngram_encoder(char, hidden, nchars)
 
         # (max_seq_len x batch * nwords x emb_dim)
         outs, emb = outs[:, unsort], emb[:, unsort]
@@ -133,10 +133,10 @@ class Pie(pl.LightningModule):
 
         return emb, outs
 
-    def proj(self, x: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]):
+    def proj(self, x: Tuple[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor]]):
         # tensor(length, batch_size)
         # tensor(length, batch_size * words)
-        flat_subwords, fsw_len, grouped_subwords, gsw_len = x
+        ((flat_subwords, fsw_len), (grouped_subwords, gsw_len)) = x
 
         # Embedding
         emb, cemb_outs = self._embedding(grouped_subwords, gsw_len, fsw_len)
@@ -155,7 +155,7 @@ class Pie(pl.LightningModule):
         return logits, emb, enc_outs
 
     def common_train_val_step(self, batch, batch_idx):
-        x, (flat_subwords, fsw_len, grouped_subwords, gsw_len) = batch
+        x, ((flat_subwords, fsw_len), (grouped_subwords, gsw_len)) = batch
 
         emb, enc_outs, dec_out = self.proj(x)
 

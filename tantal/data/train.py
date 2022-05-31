@@ -38,7 +38,8 @@ class GroundTruthDataset(Dataset):
 
         :info: Padded with value first, batch last
         """
-        flat_subwords, fsw_len, grouped_subwords, gsw_len = zip(x)
+        print(x)
+        (flat_subwords, fsw_len), (grouped_subwords, gsw_len) = x
         # torch.Tensor(Sequence Length * Batch Size)
         flat_subwords = pad_sequence(
             sequences=[torch.tensor(sw, dtype=torch.int8) for sw in flat_subwords],
@@ -83,18 +84,18 @@ class GroundTruthDataset(Dataset):
         return len(self.annotations)
 
     def __getitem__(self, idx):
-        forms, tasks = zip(self.annotations[idx])
+        forms, tasks = zip(*self.annotations[idx])
         forms = self.tokenizer.encode(forms, is_pretokenized=True)
-        if not self.categorical:
+        if self.categorical:
             raise NotImplementedError
         else:
             annots = self.tokenizer.encode(tasks, is_pretokenized=True)
             return self.tokenized_to_output(forms), self.tokenized_to_output(annots)
 
-    def train_collate_fn(self, batch):
+    def collate_fn(self, batch):
         """
         DataLoaderBatch should be a list of (sequence, target, length) tuples...
         Returns a padded tensor of sequences sorted from longest to shortest,
         """
-        x, y = batch
+        x, y = zip(*batch)
         return self.pad_batch(x), self.pad_batch(y)
