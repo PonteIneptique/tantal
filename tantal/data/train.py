@@ -64,13 +64,14 @@ class GroundTruthDataset(Dataset):
         with open(filepath) as f:
             sentence = []
             headers = []
-            for line_idx, line in enumerate(f.read()):
+            for line_idx, line in enumerate(f):
                 line = line.strip().split("\t")
                 if line_idx == 0:
                     headers = line
-                elif not line and sentence:
-                    yield sentence
-                    sentence = []
+                elif not [col for col in line if col]:
+                    if sentence:
+                        yield sentence
+                        sentence = []
                 else:
                     line = dict(zip(headers, line))
                     try:

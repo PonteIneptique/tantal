@@ -230,19 +230,19 @@ class LinearDecoder(nn.Module):
 
     Parameters
     ===========
-    label_encoder : LabelEncoder
+    vocab_size : LabelEncoder
     in_features : int, input dimension
     """
-    def __init__(self, label_encoder, in_features):
-        self.label_encoder = label_encoder
+    def __init__(self, vocab_size: int, in_features: int, padding_index: int):
+        self.out_dim = vocab_size
         super().__init__()
 
         # nll weight
-        nll_weight = torch.ones(len(label_encoder))
-        nll_weight[label_encoder.get_pad()] = 0.
+        nll_weight = torch.ones(self.out_dim)
+        nll_weight[padding_index] = 0.
         self.register_buffer('nll_weight', nll_weight)
         # decoder output
-        self.decoder = nn.Linear(in_features, len(label_encoder))
+        self.decoder = nn.Linear(in_features, self.out_dim)
         self.init()
 
     def init(self):

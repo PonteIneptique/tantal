@@ -51,13 +51,13 @@ class Pie(pl.LightningModule):
             padding_idx=tokenizer.token_to_id("[PAD]")
         )
         # init embeddings
-        initialization.init_embeddings(self.ngram_emb)
+        initialization.init_embeddings(self.embedding)
 
         self.embedding_ngram_encoder = getattr(nn, cell)(
             cemb_dim, cemb_dim, bidirectional=True,
             num_layers=num_layers, dropout=dropout
         )
-        initialization.init_rnn(self.inword_emb, scheme=init_rnn)
+        initialization.init_rnn(self.embedding_ngram_encoder, scheme=init_rnn)
 
         # Encoder
         self.encoder = RNNEncoder(
@@ -72,9 +72,9 @@ class Pie(pl.LightningModule):
         self.decoder = None
         if categorical:
             self.decoder = AttentionalDecoder(
-                tokenizer.get_vocab_size(),
-                cemb_dim,
-                self.cemb.embedding_dim,
+                tokenizer=tokenizer,
+                in_dim=cemb_dim * 2,
+                hidden_size=hidden_size,
                 context_dim=hidden_size * 2,  # Bi-directional
                 num_layers=cemb_layers,
                 cell_type=cell,
@@ -83,11 +83,15 @@ class Pie(pl.LightningModule):
             )
         else:
             self.decoder = LinearDecoder(
-                tokenizer.get_vocab_size(),
-                self.cemb.embedding_dim
+                vocab_size=tokenizer.get_vocab_size(),
+                in_features=cemb_dim * 2,
+                padding_index=tokenizer.token_to_id("[PAD]")
             )
 
-        self.lm_fwd_decoder = LinearDecoder(tokenizer.get_vocab_size(), hidden_size)
+        self.lm_fwd_decoder = LinearDecoder(
+                vocab_size=tokenizer.get_vocab_size(),
+                in_features=hidden_size,
+                padding_index=tokenizer.token_to_id("[PAD]"))
         self.lm_bwd_decoder = self.lm_fwd_decoder
 
         self._weights = {
