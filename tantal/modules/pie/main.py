@@ -196,13 +196,21 @@ class Pie(pl.LightningModule):
         }
 
         # (LM)
-        if len(emb) > 1:  # can't compute loss for 1-length batches
-            # always at first layer
-            fwd, bwd = F.dropout(
-                enc_outs[0], p=0, training=self.training
-            ).chunk(2, dim=2)
-            # forward logits
+        if len(emb) > 1:
+            # Divide the two direction of enc_outs[0]
+            fwd, bwd = enc_outs[0].chunk(2, dim=2)
+
+            # Remove the first last token and try to predict each next token (WordLevel)
+            # Issue: we are not at the word level
+            # Solution:
+            #   1. Use grouped subwords ? But wouldn't that be weird in terms of efficiency ? #
+            #          Not even sure it's possible (same problem ?)
+            #   2. Use RNN and predict flat_subwords. Need to share everything though.
             lm_fwd = self.lm_fwd_decoder(pad(fwd[:-1], pos='pre'))
+            flat_subwords = flat_subwords.view(-1)
+            flat_subwords = flat_subwords[flat_subwords != self._tokenizer.token_to_id("[PAD]")]
+            print(lm_fwd.view(-1, self._tokenizer.get_vocab_size()).shape)
+            print(flat_subwords.shape)
             losses["loss_lm_fwd"] = F.cross_entropy(
                 lm_fwd.view(-1, self._tokenizer.get_vocab_size()),
                 flat_subwords.view(-1),
@@ -210,7 +218,7 @@ class Pie(pl.LightningModule):
                 reduction="mean",
                 ignore_index=self._tokenizer.token_to_id("[PAD]")
             )
-            # backward logits
+            # Same but previous token is the target
             lm_bwd = self.lm_bwd_decoder(pad(bwd[1:], pos='post'))
             losses["loss_lm_bwd"] = F.cross_entropy(
                 lm_bwd.view(-1, self._tokenizer.get_vocab_size()),
