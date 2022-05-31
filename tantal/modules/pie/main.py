@@ -3,6 +3,7 @@ import torch
 from tokenizers import Tokenizer
 from torch.nn import functional as F
 import torch.nn as nn
+from torch.nn.utils.rnn import pad_sequence
 from typing import Tuple, Any
 
 from tantal.modules.pie.decoder import LinearDecoder, RNNEncoder, AttentionalDecoder
@@ -59,23 +60,27 @@ class Pie(pl.LightningModule):
         )
         initialization.init_rnn(self.embedding_ngram_encoder, scheme=init_rnn)
 
+        # Bidirectional so embedding_encoder_out = 2*cemb_dim
+        embedding_out_dim = 2 * cemb_dim
+
         # Encoder
         self.encoder = RNNEncoder(
-            cemb_dim * 2, hidden_size,
+            in_size=embedding_out_dim, hidden_size=hidden_size,
             num_layers=num_layers,
             cell=cell,
             dropout=dropout,
             init_rnn=init_rnn
         )
+        encoder_out_dim = 2 * hidden_size
 
         # Decoders
         self.decoder = None
         if not categorical:
             self.decoder = AttentionalDecoder(
                 tokenizer=tokenizer,
-                in_dim=cemb_dim * 2,
-                hidden_size=hidden_size,
-                context_dim=hidden_size * 2,  # Bi-directional
+                cemb_dim=cemb_dim,
+                cemb_encoding_dim=embedding_out_dim,
+                context_dim=encoder_out_dim,  # Bi-directional
                 num_layers=cemb_layers,
                 cell_type=cell,
                 dropout=dropout,
@@ -93,6 +98,11 @@ class Pie(pl.LightningModule):
                 in_features=hidden_size,
                 padding_index=tokenizer.token_to_id("[PAD]"))
         self.lm_bwd_decoder = self.lm_fwd_decoder
+
+        # nll weight
+        nll_weight = torch.ones(tokenizer.get_vocab_size())
+        nll_weight[tokenizer.token_to_id("[PAD]")] = 0.
+        self.register_buffer('lm_nll_weight', nll_weight)
 
         self._weights = {
             "annotation": 1.0,
@@ -133,7 +143,12 @@ class Pie(pl.LightningModule):
 
         return emb, outs
 
-    def proj(self, x: Tuple[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]):
+    def proj(
+            self,
+            x: Tuple[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
+            train_or_eval: bool = False,
+            max_seq_len: int = 20
+    ):
         # tensor(length, batch_size)
         # tensor(length, batch_size * words)
         ((flat_subwords, fsw_len), (grouped_subwords, gsw_len, nbwords)) = x
@@ -153,8 +168,9 @@ class Pie(pl.LightningModule):
             # context: torch.Size([Batch Size * Max Length, 2 * Hidden Size]) <--- PROBLEM
             single_encoded_sentence = flatten_padded_batch(encoded_sentences[-1], nbwords)
             # Use last layer enc_outs[-1]
-            logits = self.decoder(encoded_words=encoded_words, lengths=nbwords,
-                                  encoded_sentence=single_encoded_sentence)
+            logits = self.decoder(encoded_words=encoded_words, lengths=gsw_len,
+                                  encoded_sentence=single_encoded_sentence, train_or_eval=train_or_eval,
+                                  max_seq_len=max_seq_len)
         else:
             logits = self.decoder(encoded=encoded_sentences)
 
@@ -163,16 +179,19 @@ class Pie(pl.LightningModule):
     def common_train_val_step(self, batch, batch_idx):
         x, ((flat_subwords, fsw_len), (grouped_subwords, gsw_len, nb_words)) = batch
 
-        emb, enc_outs, dec_out = self.proj(x)
+        (loss_matrix_probs, hyps, final_scores), emb, enc_outs = self.proj(
+            x,
+            train_or_eval=True,
+            max_seq_len=gsw_len.max()
+        )
 
+        # out_subwords = pad_sequence(loss_matrix_probs, padding_value=self._tokenizer.token_to_id("[PAD]"))
         # Decoder loss
         losses = {
             "loss_annotation": F.cross_entropy(
-                dec_out,
-                grouped_subwords,
-                ignore_index=self._tokenizer.token_to_id("[PAD]"),
-                reduction=self.reduction,
-                label_smoothing=self.label_smoothing
+                input=loss_matrix_probs.view(-1, loss_matrix_probs.shape[-1]),
+                target=grouped_subwords.view(-1),
+                ignore_index=self._tokenizer.token_to_id("[PAD]")
             )
         }
 
@@ -187,7 +206,7 @@ class Pie(pl.LightningModule):
             losses["loss_lm_fwd"] = F.cross_entropy(
                 lm_fwd.view(-1, self._tokenizer.get_vocab_size()),
                 flat_subwords.view(-1),
-                weight=self.nll_weight,
+                weight=self.lm_nll_weight,
                 reduction="mean",
                 ignore_index=self._tokenizer.token_to_id("[PAD]")
             )
@@ -196,7 +215,7 @@ class Pie(pl.LightningModule):
             losses["loss_lm_bwd"] = F.cross_entropy(
                 lm_bwd.view(-1, self._tokenizer.get_vocab_size()),
                 flat_subwords.view(-1),
-                weight=self.nll_weight,
+                weight=self.lm_nll_weight,
                 reduction="mean",
                 ignore_index=self._tokenizer.token_to_id("[PAD]")
             )

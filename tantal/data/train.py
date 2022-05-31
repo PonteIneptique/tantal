@@ -43,7 +43,7 @@ class GroundTruthDataset(Dataset):
         (grouped_subwords, gsw_len, nb_words) = zip(*grouped_subwords)
         # torch.Tensor(Sequence Length * Batch Size)
         flat_subwords = pad_sequence(
-            sequences=[torch.tensor(sw, dtype=torch.int) for sw in flat_subwords],
+            sequences=[torch.tensor(sw, dtype=torch.long) for sw in flat_subwords],
             padding_value=self.pad_index
         )
         # torch.Tensor(Max word length, Sum(Word Count in Batch))
@@ -51,7 +51,7 @@ class GroundTruthDataset(Dataset):
         # -> Second dimension is how many word there are in total in the batch
         grouped_subwords = pad_sequence(
             sequences=[
-                torch.tensor(sw, dtype=torch.int)
+                torch.tensor(sw, dtype=torch.long)
                 for sentence_subwords in grouped_subwords
                 for sw in sentence_subwords
             ],

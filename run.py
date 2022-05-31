@@ -13,7 +13,7 @@ DEV_FILE = "../LASLA/mood-tense-voice-pft-clitics/dev.tsv"
 
 if not os.path.exists(TOKENIZER_PATH):
     tokenizer = create_tokenizer("unigram", "NFKD,Lowercase", "Whitespace,Digits")
-    tokenizer_trainer = create_trainer("unigram", 5000, special_tokens=["[PAD]", "[EOS]", "[BOS]"])
+    tokenizer_trainer = create_trainer("unigram", 1000, special_tokens=["[PAD]", "[EOS]", "[BOS]"])
     tokenizer.train_from_iterator(parse_file(TRAIN_FILE), trainer=tokenizer_trainer)
     tokenizer.save(TOKENIZER_PATH)
 else:

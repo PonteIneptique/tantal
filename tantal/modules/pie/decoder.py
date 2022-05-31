@@ -3,7 +3,7 @@ import torch
 from torch import nn as nn
 from torch.nn.utils.rnn import pad_packed_sequence, pack_padded_sequence
 
-import torch.functional as F
+import torch.nn.functional as F
 from tokenizers import Tokenizer
 
 from tantal.modules import initialization
@@ -19,17 +19,17 @@ class AttentionalDecoder(nn.Module):
     Parameters
     ===========
     label_encoder : LabelEncoder of the task
-    in_dim : int, embedding dimension of the task.
+    cemb_dim : int, embedding dimension of the task.
         It should be the same as the corresponding encoder to ensure that weights
         can be shared.
-    hidden_size : int, hidden size of the encoder, decoder and attention modules.
+    cemb_encoding_dim : int, hidden size of the encoder, decoder and attention modules.
     context_dim : int (optional), dimensionality of additional context vectors
     """
     def __init__(
             self,
             tokenizer: Tokenizer,
-            in_dim: int,
-            hidden_size: int,
+            cemb_dim: int,
+            cemb_encoding_dim: int,
             context_dim: int = 0,
             dropout: float = .3,
             # rnn
@@ -54,14 +54,14 @@ class AttentionalDecoder(nn.Module):
         self.register_buffer('nll_weight', nll_weight)
 
         # emb
-        self.embs = nn.Embedding(self.tokenizer.get_vocab_size(), in_dim)
+        self.embs = nn.Embedding(self.tokenizer.get_vocab_size(), cemb_dim)
 
         # rnn
-        self.rnn = getattr(nn, cell_type)(in_dim + context_dim, hidden_size,
+        self.rnn = getattr(nn, cell_type)(cemb_dim + context_dim, cemb_encoding_dim,
                                           num_layers=num_layers,
                                           dropout=dropout if num_layers > 1 else 0)
-        self.attn = Attention(hidden_size)
-        self.proj = nn.Linear(hidden_size, tokenizer.get_vocab_size())
+        self.attn = Attention(cemb_encoding_dim)
+        self.proj = nn.Linear(cemb_encoding_dim, tokenizer.get_vocab_size())
 
         self.init()
 
@@ -80,6 +80,7 @@ class AttentionalDecoder(nn.Module):
             max_seq_len=20,
             bos=None,
             eos=None,
+            train_or_eval: bool = False,
             encoded_sentence=None) -> Tuple[Optional[torch.Tensor], List[Tuple[int]], List[float]]:
         """
          Decoding routine for inference with step-wise argmax procedure
@@ -155,19 +156,20 @@ class AttentionalDecoder(nn.Module):
             #   of current sequence output
             seq_output[tensor_to_original_batch_indexes] = inp
 
-            # If we are training, we also set-up the same thing for the loss_matrix_probs
-            if self.training:
+            # If we are training, we also set-up the same thing for the loss_matrix_probs#
+            if train_or_eval:
                 in_loop_loss = torch.full(
                     (batch, self.tokenizer.get_vocab_size()),
                     .0,
                     device=device
                 )
                 in_loop_loss[tensor_to_original_batch_indexes] = outs
+
                 if loss_matrix_probs is None:
                     # We add a dimension at the "Word" level
-                    loss_matrix_probs = in_loop_loss.unsqueeze(1)
+                    loss_matrix_probs = in_loop_loss.unsqueeze(0)
                 else:
-                    loss_matrix_probs = torch.cat([loss_matrix_probs, in_loop_loss])
+                    loss_matrix_probs = torch.cat([loss_matrix_probs, in_loop_loss.unsqueeze(0)], dim=0)
 
             # We set the score where we have EOS predictions as 0
             score[inp == eos] = 0
