@@ -2,8 +2,8 @@ import os
 from torch.utils.data import DataLoader
 import pytorch_lightning as pl
 from tantal.modules.pie.main import Pie
-from tantal.tokens.create import create_tokenizer, create_trainer
-from tantal.tokens.train import parse_file
+from tantal.data.tokens import create_tokenizer, create_trainer
+from tantal.data.tokens import parse_file
 from tantal.data.train import GroundTruthDataset
 from tokenizers import Tokenizer
 
@@ -20,13 +20,13 @@ else:
     tokenizer = Tokenizer.from_file(TOKENIZER_PATH)
 
 model = Pie(tokenizer, cemb_dim=50, cemb_layers=1, hidden_size=128, num_layers=2)
-train_dataset = GroundTruthDataset(TRAIN_FILE, task="lemma", tokenizer=tokenizer)
+train_dataset = GroundTruthDataset(TRAIN_FILE, main_task="lemma", tokenizer=tokenizer)
 train_loader = DataLoader(
     train_dataset,
     collate_fn=train_dataset.collate_fn,
     batch_size=4
 )
-dev_dataset = GroundTruthDataset(DEV_FILE, task="lemma", tokenizer=tokenizer)
+dev_dataset = GroundTruthDataset(DEV_FILE, main_task="lemma", tokenizer=tokenizer)
 dev_loader = DataLoader(
     dev_dataset,
     collate_fn=dev_dataset.collate_fn,

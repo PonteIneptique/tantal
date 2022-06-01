@@ -1,5 +1,4 @@
-from typing import List, Tuple
-from operator import itemgetter
+from typing import List, Tuple, Dict
 
 import torch
 from torch.utils.data import Dataset
@@ -7,23 +6,28 @@ from torch.nn.utils.rnn import pad_sequence
 
 from tokenizers import Tokenizer, Encoding
 
-from tantal.tokens.align import get_word_groups
+from tantal.data.vocabulary import Task, Vocabulary, get_word_groups
 
 
 class GroundTruthDataset(Dataset):
-    def __init__(self, annotations_file: str, task: str, tokenizer: Tokenizer, categorical: bool = False):
+    def __init__(
+        self,
+        annotations_file: str,
+        vocabulary: Vocabulary
+    ):
         self.annotation_file: str = annotations_file
-        self.task: str = task
-        self.tokenizer: Tokenizer = tokenizer
-        self.categorical: bool = categorical
-        self.annotations: List[List[Tuple[str, str]]] = list(self._read())
+        self.vocabulary: Vocabulary = vocabulary
+        self.tasks: Dict[str, Task] = vocabulary.tasks
+        self.tokenizer: Tokenizer = vocabulary.tokenizer
+
+        self.annotations: List[List[Dict[str, str]]] = list(self._read())
         self.pad_index = self.tokenizer.token_to_id("[PAD]")
         self.bos_index = self.tokenizer.token_to_id("[BOS]")
         self.eos_index = self.tokenizer.token_to_id("[EOS]")
 
     def _read(self):
         if self.annotation_file.endswith(".tsv"):
-            return self._read_tsv(self.annotation_file, self.task)
+            return self._read_tsv(self.annotation_file, list(self.tasks.keys()))
         raise ValueError("Unsupported data format")
 
     def tokenized_to_output(self, data: Encoding):
@@ -69,7 +73,7 @@ class GroundTruthDataset(Dataset):
         )
 
     @staticmethod
-    def _read_tsv(filepath, task):
+    def _read_tsv(filepath, tasks):
         with open(filepath) as f:
             sentence = []
             headers = []
@@ -79,12 +83,22 @@ class GroundTruthDataset(Dataset):
                     headers = line
                 elif not [col for col in line if col]:
                     if sentence:
+                        # ToDo: Reformat sentence to be already in the LIST format and avoid to
+                        #  do that at the __getitem__ step
                         yield sentence
                         sentence = []
                 else:
                     line = dict(zip(headers, line))
                     try:
-                        sentence.append((line["token"], line[task]))
+                        sentence.append({
+                            "token": line["token"],
+                            "lm_token": line["token"],
+                            **{
+                                line[task]
+                                for task in tasks
+                                if task != "lm_token"
+                            }
+                        })
                     except KeyError:
                         raise  # Custom one day ?
 
@@ -92,13 +106,21 @@ class GroundTruthDataset(Dataset):
         return len(self.annotations)
 
     def __getitem__(self, idx):
-        forms, tasks = zip(*self.annotations[idx])
-        forms = self.tokenizer.encode(forms, is_pretokenized=True)
-        if self.categorical:
-            raise NotImplementedError
-        else:
-            annots = self.tokenizer.encode(tasks, is_pretokenized=True)
-            return self.tokenized_to_output(forms), self.tokenized_to_output(annots)
+        sentence = self.annotations[idx]
+
+        tokens = self.vocabulary.encode_input(sentence.pop("token"))
+
+        sentence = {
+            task: self.vocabulary.encode([token[task] for token in sentence], task=task)
+            for task in self.vocabulary.tasks
+        }
+
+        sentence_length = len(tokens)
+        words_length = [len(word) for word in tokens]
+        nbwords = len(sentence["lm_token"])
+
+
+        return self.tokenized_to_output(forms)
 
     def collate_fn(self, batch):
         """
