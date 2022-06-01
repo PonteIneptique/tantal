@@ -81,7 +81,7 @@ class Vocabulary:
     def encode(self, sequence: List[str], task: str) -> AnySentenceEncodings:
         if self.tasks[task].categorical:
             if self.tasks[task].unknown_ok:
-                [self.tasks_vocab[task].get(element, "[UNK]") for element in sequence]
+                return [self.tasks_vocab[task].get(element, "[UNK]") for element in sequence]
             else:
                 return [self.tasks_vocab[task][element] for element in sequence]
         else:
@@ -95,13 +95,15 @@ class Vocabulary:
 
     def build_from_sentences(
         self,
-        sentences: List[List[Dict[str, str]]]
+        sentences: List[Dict[str, List[str]]]
     ) -> None:
         for sentence in sentences:
-            for example in sentence:
-                for task in self.tasks:
-                    if example[task] not in self.tasks_vocab[task]:
-                        self.tasks_vocab[task][example[task]] = len(self.tasks_vocab[task])
+            for task in self.tasks:
+                if not self.tasks[task].categorical:
+                    continue
+                for example in sentence[task]:
+                    if example not in self.tasks_vocab[task]:
+                        self.tasks_vocab[task][example] = len(self.tasks_vocab[task])
         self._build_reverse()
         return
 

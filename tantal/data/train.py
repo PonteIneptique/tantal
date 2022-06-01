@@ -20,7 +20,7 @@ class GroundTruthDataset(Dataset):
         self.tasks: Dict[str, Task] = vocabulary.tasks
         self.tokenizer: Tokenizer = vocabulary.tokenizer
 
-        self.annotations: List[List[Dict[str, str]]] = list(self._read())
+        self.annotations: List[Dict[str, List[str]]] = list(self._read())
         self.pad_index = self.tokenizer.token_to_id("[PAD]")
         self.bos_index = self.tokenizer.token_to_id("[BOS]")
         self.eos_index = self.tokenizer.token_to_id("[EOS]")
@@ -72,6 +72,9 @@ class GroundTruthDataset(Dataset):
             )
         )
 
+    def fit_vocab(self):
+        self.vocabulary.build_from_sentences(self.annotations)
+
     @staticmethod
     def _read_tsv(filepath, tasks):
         with open(filepath) as f:
@@ -83,9 +86,10 @@ class GroundTruthDataset(Dataset):
                     headers = line
                 elif not [col for col in line if col]:
                     if sentence:
-                        # ToDo: Reformat sentence to be already in the LIST format and avoid to
-                        #  do that at the __getitem__ step
-                        yield sentence
+                        yield {
+                            task: [token[task] for token in sentence]
+                            for task in sentence[0]
+                        }
                         sentence = []
                 else:
                     line = dict(zip(headers, line))
@@ -94,7 +98,7 @@ class GroundTruthDataset(Dataset):
                             "token": line["token"],
                             "lm_token": line["token"],
                             **{
-                                line[task]
+                                task: line[task]
                                 for task in tasks
                                 if task != "lm_token"
                             }
@@ -106,21 +110,26 @@ class GroundTruthDataset(Dataset):
         return len(self.annotations)
 
     def __getitem__(self, idx):
-        sentence = self.annotations[idx]
+        sentence: Dict[str, List[str]] = self.annotations[idx]
 
-        tokens = self.vocabulary.encode_input(sentence.pop("token"))
+        tokens, token_length = self.vocabulary.encode_input(sentence["token"])
 
-        sentence = {
-            task: self.vocabulary.encode([token[task] for token in sentence], task=task)
+        categoricals = {
+            task: self.vocabulary.encode(sentence[task], task=task)
             for task in self.vocabulary.tasks
+            if task != "token" and self.tasks[task].categorical
         }
 
-        sentence_length = len(tokens)
-        words_length = [len(word) for word in tokens]
-        nbwords = len(sentence["lm_token"])
+        non_categoricals = [
+            [
+                [task, f"{task}__length"],
+                *self.vocabulary.encode(sentence[task], task=task)
+            ]
+            for task in self.vocabulary.tasks
+            if task != "token" and not self.tasks[task].categorical
+        ]
 
-
-        return self.tokenized_to_output(forms)
+        return {"token": tokens, "wordtoken__length": token_length}, categoricals, non_categoricals
 
     def collate_fn(self, batch):
         """
