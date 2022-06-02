@@ -133,11 +133,9 @@ class Pie(pl.LightningModule):
             }
         }
 
-        self.accuracy: Dict[str, torchmetrics.Accuracy] = {
-            task: torchmetrics.Accuracy()
-            for task in self.tasks
-            if task != "lm_token"
-        }
+        for task in self.tasks:
+            if task != "lm_token":
+                setattr(self, f"acc_{task}", torchmetrics.Accuracy())
 
     def get_main_task_gt(self, gt: Dict[str, Dict[str, torch.Tensor]], length: bool = False):
         if self.tasks[self.main_task].categorical:
@@ -300,14 +298,15 @@ class Pie(pl.LightningModule):
             else:
                 gt = batch[1]["non_categoricals"][task.name].transpose(1, 0)  #[:, 1:]  # We remove the first dimension
 
-            self.accuracy[task.name](out.cpu(), gt.cpu())
-            self.log(f'{task}_acc', self.accuracy[task.name])
+            attribute = getattr(self, f'acc_{task.name}')
+            attribute(out.cpu(), gt.cpu())
+            self.log(f'acc_{task.name}', attribute, on_epoch=True, prog_bar=True)
 
         return loss
 
-    def validation_epoch_end(self, outputs=None) -> None:
-        for task in self.accuracy:
-            self.log(f'{task}_acc', self.accuracy[task])
+    #def validation_epoch_end(self, outputs=None) -> None:
+    #    for task in self.accuracy:
+    #        self.log(f'{task}_acc', self.accuracy[task])
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=1e-3)
