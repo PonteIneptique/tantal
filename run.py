@@ -18,7 +18,7 @@ if not os.path.exists(TOKENIZER_PATH):
 else:
     tokenizer = Tokenizer.from_file(TOKENIZER_PATH)
 
-voc = Vocabulary(
+vocabulary = Vocabulary(
     tokenizer=tokenizer,
     tasks=[
         Task("lemma", categorical=False, unknown_ok=True),
@@ -26,23 +26,21 @@ voc = Vocabulary(
     ]
 )
 
-train_dataset = GroundTruthDataset(TRAIN_FILE, vocabulary=voc)
+train_dataset = GroundTruthDataset(TRAIN_FILE, vocabulary=vocabulary)
 train_dataset.fit_vocab()
 
-print(train_dataset[0])
-
-raise
 train_loader = DataLoader(
     train_dataset,
     collate_fn=train_dataset.collate_fn,
     batch_size=4
 )
-dev_dataset = GroundTruthDataset(DEV_FILE, main_task="lemma", tokenizer=tokenizer)
+
+dev_dataset = GroundTruthDataset(DEV_FILE, vocabulary=vocabulary)
 dev_loader = DataLoader(
     dev_dataset,
     collate_fn=dev_dataset.collate_fn,
     batch_size=4
 )
-#model = Pie(tokenizer, cemb_dim=50, cemb_layers=1, hidden_size=128, num_layers=2)
+model = Pie(vocabulary, cemb_dim=50, cemb_layers=1, hidden_size=128, num_layers=2)
 trainer = pl.Trainer(gpus=1)
 trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=dev_loader)

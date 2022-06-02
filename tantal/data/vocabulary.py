@@ -49,6 +49,7 @@ class Vocabulary:
         self.token_pad_index: int = self.tokenizer.token_to_id("[PAD]")
         self.token_bos_index: int = self.tokenizer.token_to_id("[BOS]")
         self.token_eos_index: int = self.tokenizer.token_to_id("[EOS]")
+        self.non_categorical_pad_token_index: int = 0
 
         self.tasks_vocab: Dict[str, Dict[str, int]] = {
             task.name: {"[PAD]": 0, "[UNK]": 1} if task.unknown_ok else {"[PAD]": 0}
@@ -85,7 +86,11 @@ class Vocabulary:
             else:
                 return [self.tasks_vocab[task][element] for element in sequence]
         else:
-            return get_word_groups(self.tokenizer.encode(sequence, is_pretokenized=True))
+            return get_word_groups(
+                self.tokenizer.encode(sequence, is_pretokenized=True),
+                eos=self.token_eos_index,
+                bos=self.token_bos_index
+            )
 
     def decode(self, sequence: List[int], task: str) -> List[str]:
         if self.tasks[task].categorical:
@@ -131,3 +136,4 @@ class Vocabulary:
         )
         o.set_vocabulary(dictionary["vocabulary"])
         return o
+

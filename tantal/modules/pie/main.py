@@ -8,6 +8,7 @@ from typing import Tuple, Any
 
 from tantal.modules.pie.decoder import LinearDecoder, RNNEncoder, AttentionalDecoder
 from tantal.modules import initialization
+from tantal.data.vocabulary import Vocabulary
 from tantal.modules.pie.utils import pad_flat_batch, flatten_padded_batch, pad
 
 
@@ -21,7 +22,7 @@ class Pie(pl.LightningModule):
     """
     def __init__(
             self,
-            tokenizer: Tokenizer,
+            vocabulary: Vocabulary,
             cemb_dim: int,
             cemb_layers: int,
             hidden_size: int,
@@ -43,13 +44,15 @@ class Pie(pl.LightningModule):
         self.cemb_layers = cemb_layers
         # only during training
         self.init_rnn = init_rnn
-        self._tokenizer = tokenizer
+        self._vocabulary = vocabulary
+
+
 
         # Embeddings
         self.embedding = nn.Embedding(
-            tokenizer.get_vocab_size(),
+            vocabulary.tokenizer_size,
             cemb_dim,
-            padding_idx=tokenizer.token_to_id("[PAD]")
+            padding_idx=vocabulary.token_pad_index
         )
         # init embeddings
         initialization.init_embeddings(self.embedding)
@@ -77,7 +80,7 @@ class Pie(pl.LightningModule):
         self.decoder = None
         if not categorical:
             self.decoder = AttentionalDecoder(
-                tokenizer=tokenizer,
+                vocabulary=vocabulary,
                 cemb_dim=cemb_dim,
                 cemb_encoding_dim=embedding_out_dim,
                 context_dim=encoder_out_dim,  # Bi-directional
@@ -88,20 +91,20 @@ class Pie(pl.LightningModule):
             )
         else:
             self.decoder = LinearDecoder(
-                vocab_size=tokenizer.get_vocab_size(),
+                vocab_size=vocabulary.get_vocab_size(),
                 in_features=cemb_dim * 2,
-                padding_index=tokenizer.token_to_id("[PAD]")
+                padding_index=vocabulary.token_to_id("[PAD]")
             )
 
         self.lm_fwd_decoder = LinearDecoder(
-                vocab_size=tokenizer.get_vocab_size(),
+                vocab_size=vocabulary.get_vocab_size(),
                 in_features=hidden_size,
-                padding_index=tokenizer.token_to_id("[PAD]"))
+                padding_index=vocabulary.token_to_id("[PAD]"))
         self.lm_bwd_decoder = self.lm_fwd_decoder
 
         # nll weight
-        nll_weight = torch.ones(tokenizer.get_vocab_size())
-        nll_weight[tokenizer.token_to_id("[PAD]")] = 0.
+        nll_weight = torch.ones(vocabulary.get_vocab_size())
+        nll_weight[vocabulary.token_to_id("[PAD]")] = 0.
         self.register_buffer('lm_nll_weight', nll_weight)
 
         self._weights = {
@@ -191,7 +194,7 @@ class Pie(pl.LightningModule):
             "loss_annotation": F.cross_entropy(
                 input=loss_matrix_probs.view(-1, loss_matrix_probs.shape[-1]),
                 target=grouped_subwords.view(-1),
-                ignore_index=self._tokenizer.token_to_id("[PAD]")
+                ignore_index=self._vocabulary.token_to_id("[PAD]")
             )
         }
 
@@ -208,24 +211,24 @@ class Pie(pl.LightningModule):
             #   2. Use RNN and predict flat_subwords. Need to share everything though.
             lm_fwd = self.lm_fwd_decoder(pad(fwd[:-1], pos='pre'))
             flat_subwords = flat_subwords.view(-1)
-            flat_subwords = flat_subwords[flat_subwords != self._tokenizer.token_to_id("[PAD]")]
-            print(lm_fwd.view(-1, self._tokenizer.get_vocab_size()).shape)
+            flat_subwords = flat_subwords[flat_subwords != self._vocabulary.token_to_id("[PAD]")]
+            print(lm_fwd.view(-1, self._vocabulary.get_vocab_size()).shape)
             print(flat_subwords.shape)
             losses["loss_lm_fwd"] = F.cross_entropy(
-                lm_fwd.view(-1, self._tokenizer.get_vocab_size()),
+                lm_fwd.view(-1, self._vocabulary.get_vocab_size()),
                 flat_subwords.view(-1),
                 weight=self.lm_nll_weight,
                 reduction="mean",
-                ignore_index=self._tokenizer.token_to_id("[PAD]")
+                ignore_index=self._vocabulary.token_to_id("[PAD]")
             )
             # Same but previous token is the target
             lm_bwd = self.lm_bwd_decoder(pad(bwd[1:], pos='post'))
             losses["loss_lm_bwd"] = F.cross_entropy(
-                lm_bwd.view(-1, self._tokenizer.get_vocab_size()),
+                lm_bwd.view(-1, self._vocabulary.get_vocab_size()),
                 flat_subwords.view(-1),
                 weight=self.lm_nll_weight,
                 reduction="mean",
-                ignore_index=self._tokenizer.token_to_id("[PAD]")
+                ignore_index=self._vocabulary.token_to_id("[PAD]")
             )
 
         loss = sum([

@@ -4,8 +4,8 @@ from torch import nn as nn
 from torch.nn.utils.rnn import pad_packed_sequence, pack_padded_sequence
 
 import torch.nn.functional as F
-from tokenizers import Tokenizer
 
+from tantal.data.vocabulary import Vocabulary
 from tantal.modules import initialization
 from tantal.modules.pie.attention import Attention
 
@@ -27,7 +27,7 @@ class AttentionalDecoder(nn.Module):
     """
     def __init__(
             self,
-            tokenizer: Tokenizer,
+            vocabulary: Vocabulary,
             cemb_dim: int,
             cemb_encoding_dim: int,
             context_dim: int = 0,
@@ -38,30 +38,30 @@ class AttentionalDecoder(nn.Module):
             init_rnn='default'
     ):
 
-        self.tokenizer = tokenizer
+        self.vocabulary = vocabulary
         self.context_dim = context_dim
         self.num_layers = num_layers
         self.dropout = dropout
         self.init_rnn = init_rnn
         super().__init__()
 
-        self.eos = tokenizer.token_to_id("[EOS]")
-        self.bos = tokenizer.token_to_id("[BOS]")
+        self.eos = vocabulary.token_eos_index
+        self.bos = vocabulary.token_bos_index
 
         # nll weight
-        nll_weight = torch.ones(tokenizer.get_vocab_size())
-        nll_weight[tokenizer.token_to_id("[PAD]")] = 0.
+        nll_weight = torch.ones(vocabulary.tokenizer_size)
+        nll_weight[vocabulary.token_pad_index] = 0.
         self.register_buffer('nll_weight', nll_weight)
 
         # emb
-        self.embs = nn.Embedding(self.tokenizer.get_vocab_size(), cemb_dim)
+        self.embs = nn.Embedding(self.vocabulary.tokenizer_size, cemb_dim)
 
         # rnn
         self.rnn = getattr(nn, cell_type)(cemb_dim + context_dim, cemb_encoding_dim,
                                           num_layers=num_layers,
                                           dropout=dropout if num_layers > 1 else 0)
         self.attn = Attention(cemb_encoding_dim)
-        self.proj = nn.Linear(cemb_encoding_dim, tokenizer.get_vocab_size())
+        self.proj = nn.Linear(cemb_encoding_dim, vocabulary.tokenizer_size)
 
         self.init()
 
@@ -159,7 +159,7 @@ class AttentionalDecoder(nn.Module):
             # If we are training, we also set-up the same thing for the loss_matrix_probs#
             if train_or_eval:
                 in_loop_loss = torch.full(
-                    (batch, self.tokenizer.get_vocab_size()),
+                    (batch, self.vocabulary.tokenizer_size),
                     .0,
                     device=device
                 )
