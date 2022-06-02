@@ -103,7 +103,7 @@ class GroundTruthDataset(Dataset):
         return batchify_tokens(tokens, self.vocabulary.token_pad_index), {
             "categoricals": batchify(
                 [ex["categoricals"] for ex in gt],
-                padding_value=self.vocabulary.non_categorical_pad_token_index
+                padding_value=self.vocabulary.categorical_pad_token_index
             ),
             "non_categoricals": batchify_tokens(
                 [ex["non_categoricals"] for ex in gt],

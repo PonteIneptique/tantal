@@ -49,7 +49,7 @@ class Vocabulary:
         self.token_pad_index: int = self.tokenizer.token_to_id("[PAD]")
         self.token_bos_index: int = self.tokenizer.token_to_id("[BOS]")
         self.token_eos_index: int = self.tokenizer.token_to_id("[EOS]")
-        self.non_categorical_pad_token_index: int = 0
+        self.categorical_pad_token_index: int = 0
 
         self.tasks_vocab: Dict[str, Dict[str, int]] = {
             task.name: {"[PAD]": 0, "[UNK]": 1} if task.unknown_ok else {"[PAD]": 0}
@@ -82,7 +82,7 @@ class Vocabulary:
     def encode(self, sequence: List[str], task: str) -> AnySentenceEncodings:
         if self.tasks[task].categorical:
             if self.tasks[task].unknown_ok:
-                return [self.tasks_vocab[task].get(element, "[UNK]") for element in sequence]
+                return [self.tasks_vocab[task].get(element, self.tasks_vocab[task]["[UNK]"]) for element in sequence]
             else:
                 return [self.tasks_vocab[task][element] for element in sequence]
         else:

@@ -12,9 +12,8 @@ def batchify(categorical_dict: List[Dict[str, List[int]]], padding_value: int) -
             [
                 torch.tensor(batch_element[key])
                 for batch_element in categorical_dict
-                if not print(key, batch_element[key])
             ],
-            batch_first=True,
+            batch_first=False,
             padding_value=padding_value
         )
         for key in keys
@@ -31,18 +30,20 @@ def batchify_tokens(noncategorical_dict: List[Dict[str, List[List[int]]]], paddi
                     for batch_element in noncategorical_dict
                     for subtoken_sequence in batch_element[key]
                 ],
-                batch_first=True,
+                batch_first=False,
                 padding_value=padding_value
             )
             for key in keys
         }, **{
-            f"{key}__length": pad_sequence(
-                [
-                    torch.tensor(batch_element[f"{key}__length"])
-                    for batch_element in noncategorical_dict
-                ],
-                batch_first=True,
-                padding_value=padding_value
+            f"{key}__length": torch.tensor([
+                length
+                for batch_element in noncategorical_dict
+                for length in batch_element[f"{key}__length"]
+            ])
+            for key in keys
+        }, **{
+            f"{key}__sequence__length": torch.tensor(
+                [len(batch_element[key]) for batch_element in noncategorical_dict]
             )
             for key in keys
         }

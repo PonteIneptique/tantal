@@ -102,6 +102,12 @@ class AttentionalDecoder(nn.Module):
         # To make a "character" level loss, we'll append to a loss matrix each probs
         #  It necessarily starts with <BOS>
         loss_matrix_probs: Optional[torch.Tensor] = None
+        if train_or_eval:
+            loss_matrix_probs = torch.full(
+                (max_seq_len, batch, self.vocabulary.tokenizer_size),
+                .0,
+                device=device
+            )
 
         # As we go, we'll reduce the tensor size by popping finished prediction
         #  To keep adding new characters to the right words, we
@@ -113,7 +119,7 @@ class AttentionalDecoder(nn.Module):
             device=device
         )  # Tensor(batch_size)
 
-        for _ in range(max_seq_len):
+        for char_number in range(max_seq_len):
 
             # Prepare input
             #    Context is NEVER changed after the method has been called
@@ -158,18 +164,7 @@ class AttentionalDecoder(nn.Module):
 
             # If we are training, we also set-up the same thing for the loss_matrix_probs#
             if train_or_eval:
-                in_loop_loss = torch.full(
-                    (batch, self.vocabulary.tokenizer_size),
-                    .0,
-                    device=device
-                )
-                in_loop_loss[tensor_to_original_batch_indexes] = outs
-
-                if loss_matrix_probs is None:
-                    # We add a dimension at the "Word" level
-                    loss_matrix_probs = in_loop_loss.unsqueeze(0)
-                else:
-                    loss_matrix_probs = torch.cat([loss_matrix_probs, in_loop_loss.unsqueeze(0)], dim=0)
+                loss_matrix_probs[char_number][tensor_to_original_batch_indexes] = outs
 
             # We set the score where we have EOS predictions as 0
             score[inp == eos] = 0
@@ -212,7 +207,11 @@ class AttentionalDecoder(nn.Module):
 
         hyps = [hyp for hyp in zip(*hyps)]
         final_scores = [s / (len(hyp) + TINY) for s, hyp in zip(final_scores, hyps)]
-
+        if train_or_eval and loss_matrix_probs.shape[0] < max_seq_len.item():
+            loss_matrix_probs = loss_matrix_probs.expand(
+                max_seq_len.item(),
+                *loss_matrix_probs.shape[1:]
+            )
         return loss_matrix_probs, hyps, final_scores
 
 

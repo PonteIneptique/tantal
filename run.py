@@ -41,6 +41,10 @@ dev_loader = DataLoader(
     collate_fn=dev_dataset.collate_fn,
     batch_size=4
 )
-model = Pie(vocabulary, cemb_dim=50, cemb_layers=1, hidden_size=128, num_layers=2)
+model = Pie(
+    vocabulary,
+    main_task="lemma",
+    cemb_dim=50, cemb_layers=1, hidden_size=128, num_layers=2
+)
 trainer = pl.Trainer(gpus=1)
 trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=dev_loader)
