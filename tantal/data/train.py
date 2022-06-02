@@ -1,4 +1,4 @@
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Optional
 
 import random
 import torch
@@ -39,8 +39,8 @@ class GroundTruthDataset(Dataset):
             return self._read_tsv(self.annotation_file, list(self.tasks.keys()))
         raise ValueError("Unsupported data format")
 
-    def fit_vocab(self):
-        self.vocabulary.build_from_sentences(self.annotations)
+    def fit_vocab(self, max_lm_tokens: Optional[int] = None):
+        self.vocabulary.build_from_sentences(self.annotations, max_lm_tokens=max_lm_tokens)
 
     @staticmethod
     def _read_tsv(filepath, tasks):

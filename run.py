@@ -29,25 +29,26 @@ vocabulary = Vocabulary(
 )
 
 train_dataset = GroundTruthDataset(TRAIN_FILE, vocabulary=vocabulary)
-train_dataset.fit_vocab()
-train_dataset.downscale(.01)
+train_dataset.fit_vocab(max_lm_tokens=3000)
+train_dataset.downscale(.1)
 train_loader = DataLoader(
     train_dataset,
     collate_fn=train_dataset.collate_fn,
-    batch_size=4
+    batch_size=8
 )
 
 dev_dataset = GroundTruthDataset(DEV_FILE, vocabulary=vocabulary)
-dev_dataset.downscale(.01)
+#dev_dataset.downscale(.01)
 dev_loader = DataLoader(
     dev_dataset,
     collate_fn=dev_dataset.collate_fn,
-    batch_size=4
+    batch_size=8
 )
 model = Pie(
     vocabulary,
     main_task="lemma",
-    cemb_dim=50, cemb_layers=1, hidden_size=128, num_layers=2
+    cemb_dim=200, cemb_layers=1, hidden_size=128, num_layers=2
 )
 trainer = pl.Trainer(gpus=1)
 trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=dev_loader)
+trainer.save_checkpoint("here.model")

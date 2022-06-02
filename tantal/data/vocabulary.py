@@ -1,5 +1,6 @@
 from collections import namedtuple
 from typing import List, Dict, Tuple, Union, Optional
+from collections import Counter
 import json
 
 
@@ -100,15 +101,27 @@ class Vocabulary:
 
     def build_from_sentences(
         self,
-        sentences: List[Dict[str, List[str]]]
+        sentences: List[Dict[str, List[str]]],
+        max_lm_tokens: Optional[int] = None
     ) -> None:
+        vocabs = {
+            task: []
+            for task in self.tasks
+        }
         for sentence in sentences:
             for task in self.tasks:
                 if not self.tasks[task].categorical:
                     continue
-                for example in sentence[task]:
-                    if example not in self.tasks_vocab[task]:
-                        self.tasks_vocab[task][example] = len(self.tasks_vocab[task])
+                vocabs[task].extend(sentence[task])
+
+        for task in vocabs:
+            if task == "lm_token" and max_lm_tokens:
+                # Trimming down vocabulary
+                counter = Counter(vocabs[task])
+                vocabs[task], _ = zip(*counter.most_common(max_lm_tokens))
+
+            for example in sorted(list(set(vocabs[task]))):
+                self.tasks_vocab[task][example] = len(self.tasks_vocab[task])
         self._build_reverse()
         return
 

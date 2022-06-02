@@ -20,6 +20,7 @@ class Pie(pl.LightningModule):
     hidden_size : int, hidden_size for all hidden layers
     dropout : float
     """
+
     def __init__(
             self,
             vocabulary: Vocabulary,
@@ -113,9 +114,9 @@ class Pie(pl.LightningModule):
             )
 
         self.lm_fwd_decoder = LinearDecoder(
-                vocab_size=vocabulary.get_task_size("lm_token"),
-                in_features=hidden_size,
-                padding_index=vocabulary.categorical_pad_token_index)
+            vocab_size=vocabulary.get_task_size("lm_token"),
+            in_features=hidden_size,
+            padding_index=vocabulary.categorical_pad_token_index)
         self.lm_bwd_decoder = self.lm_fwd_decoder
 
         # nll weight
@@ -135,7 +136,13 @@ class Pie(pl.LightningModule):
 
         for task in self.tasks:
             if task != "lm_token":
-                setattr(self, f"acc_{task}", torchmetrics.Accuracy())
+                setattr(self, f"acc_{task}", torchmetrics.Accuracy(
+                    ignore_index=self._vocabulary.categorical_pad_token_index
+                    if task != main_task else self._vocabulary.token_pad_index
+                ))
+                if task == main_task and not self.tasks[task].categorical:
+                    # Add token level accuracy
+                    setattr(self, f"acc_{task}_token_level", torchmetrics.Accuracy())
 
     def get_main_task_gt(self, gt: Dict[str, Dict[str, torch.Tensor]], length: bool = False):
         if self.tasks[self.main_task].categorical:
@@ -264,7 +271,7 @@ class Pie(pl.LightningModule):
             self._weights.get(k[5:], 1) * losses[k]
             for k in losses
         ])
-        return preds, loss, {
+        return preds, loss, losses, {
             task: F.softmax(out, dim=-1).max(-1)
             for task, out in secondary_tasks.items()
         }
@@ -274,16 +281,30 @@ class Pie(pl.LightningModule):
         return hyps, secondary_tasks
 
     def training_step(self, batch, batch_idx):
-        preds, loss, secondary_tasks = self.common_train_val_step(batch, batch_idx)
+        preds, loss, loss_dict, secondary_tasks = self.common_train_val_step(batch, batch_idx)
         self.log("train_loss", loss, batch_size=batch[0]["token__sequence__length"].shape[0])
+        for task in loss_dict:
+            self.log(
+                "train_" + task,
+                loss_dict[task],
+                batch_size=batch[0]["token__sequence__length"].shape[0],
+                prog_bar=True
+            )
         return loss
 
-    #def _compute_metrics(self, preds, secondary_task, ground_truth):
+    # def _compute_metrics(self, preds, secondary_task, ground_truth):
 
     def validation_step(self, batch, batch_idx):
-        preds, loss, secondary_tasks = self.common_train_val_step(batch, batch_idx)
+        preds, loss, loss_dict, secondary_tasks = self.common_train_val_step(batch, batch_idx)
         self.log("dev_loss", loss, batch_size=batch[0]["token__sequence__length"].shape[0])
-
+        for task in loss_dict:
+            if task != "loss_main_task":
+                self.log(
+                    "val_" + task,
+                    loss_dict[task],
+                    batch_size=batch[0]["token__sequence__length"].shape[0],
+                    prog_bar=True
+                )
         # Batch = x, y
         for task in self.tasks.values():
             if task.name == "lm_token":
@@ -296,15 +317,28 @@ class Pie(pl.LightningModule):
             if task.categorical:
                 gt = batch[1]["categoricals"][task.name]
             else:
-                gt = batch[1]["non_categoricals"][task.name].transpose(1, 0)  #[:, 1:]  # We remove the first dimension
+                gt = batch[1]["non_categoricals"][task.name].transpose(1, 0)  # [:, 1:]  # We remove the first dimension
 
             attribute = getattr(self, f'acc_{task.name}')
             attribute(out.cpu(), gt.cpu())
             self.log(f'acc_{task.name}', attribute, on_epoch=True, prog_bar=True)
 
+            if task.name == self.main_task and not task.categorical:
+                # For non-categorical, specifically for lemma, let's make sure this computes the token level
+                #   accuracy
+                attribute = getattr(self, f'acc_{task.name}_token_level')
+                out, gt = self._vocabulary.tokenizer.decode_batch(out.cpu().tolist()), \
+                          self._vocabulary.tokenizer.decode_batch(gt.cpu().tolist())
+                local_encoder = list(set(out + gt))
+                attribute(
+                    torch.tensor([local_encoder.index(val) for val in out]),
+                    torch.tensor([local_encoder.index(val) for val in gt]),
+                )
+                self.log(f'acc_{task.name}_token_level', attribute, on_epoch=True, prog_bar=True)
+
         return loss
 
-    #def validation_epoch_end(self, outputs=None) -> None:
+    # def validation_epoch_end(self, outputs=None) -> None:
     #    for task in self.accuracy:
     #        self.log(f'{task}_acc', self.accuracy[task])
 
