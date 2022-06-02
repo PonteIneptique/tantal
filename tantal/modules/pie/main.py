@@ -1,15 +1,14 @@
-import pytorch_lightning as pl
+from typing import List, Dict
+
 import torch
-from tokenizers import Tokenizer
-from torch.nn import functional as F
 import torch.nn as nn
-from torch.nn.utils.rnn import pad_sequence
-from typing import Tuple, Any
+from torch.nn import functional as F
+import pytorch_lightning as pl
 
 from tantal.modules.pie.decoder import LinearDecoder, RNNEncoder, AttentionalDecoder
 from tantal.modules.pie.embeddings import PieEmbeddings
-from tantal.data.vocabulary import Vocabulary
-from tantal.modules.pie.utils import pad_flat_batch, flatten_padded_batch, pad
+from tantal.data.vocabulary import Vocabulary, Task
+from tantal.modules.pie.utils import flatten_padded_batch, pad
 
 
 class Pie(pl.LightningModule):
@@ -32,24 +31,37 @@ class Pie(pl.LightningModule):
             init_rnn: str = 'xavier_uniform',
             # dropout
             dropout: float = .3,
-            categorical: bool = False
+            categorical: bool = False,
+            use_secondary_tasks_decision: bool = True
     ):
         super(Pie, self).__init__()
         # args
-        self.cemb_dim = cemb_dim
-        self.hidden_size = hidden_size
-        self.num_layers = num_layers
+        self.cemb_dim: int = cemb_dim
+        self.hidden_size: int = hidden_size
+        self.num_layers: int = num_layers
         # kwargs
-        self.cell = cell
-        self.dropout = dropout
-        self.cemb_layers = cemb_layers
+        self.cell: str = cell
+        self.dropout: float = dropout
+        self.cemb_layers: int = cemb_layers
+        self.use_secondary_tasks_decision: bool = use_secondary_tasks_decision
         # only during training
-        self.init_rnn = init_rnn
+        self.init_rnn: str = init_rnn
 
         # Vocabulary and stuff
-        self._vocabulary = vocabulary
-        self.tasks = self._vocabulary.tasks
-        self.main_task = main_task
+        self._vocabulary: Vocabulary = vocabulary
+        self.tasks: Dict[str, Task] = self._vocabulary.tasks
+        self.main_task: str = main_task
+
+        # Bidirectional so embedding_encoder_out = 2*cemb_dim
+        embedding_out_dim = 2 * cemb_dim
+        encoder_out_dim = 2 * hidden_size
+        self._context_dim: int = encoder_out_dim
+        if self.use_secondary_tasks_decision:
+            self._context_dim += sum([
+                vocabulary.get_task_size(task.name)
+                for task in self.tasks.values()
+                if task.categorical and task.name not in {main_task, "lm_token"}
+            ])
 
         self.embedding = PieEmbeddings(
             vocab_size=self._vocabulary.tokenizer_size,
@@ -60,8 +72,6 @@ class Pie(pl.LightningModule):
             num_layers=num_layers,
             init=init_rnn
         )
-        # Bidirectional so embedding_encoder_out = 2*cemb_dim
-        embedding_out_dim = 2 * cemb_dim
 
         # Encoder
         self.encoder = RNNEncoder(
@@ -71,16 +81,16 @@ class Pie(pl.LightningModule):
             dropout=dropout,
             init_rnn=init_rnn
         )
-        encoder_out_dim = 2 * hidden_size
 
         self.linear_secondary_tasks = nn.ModuleDict({
             task.name: LinearDecoder(
                 vocab_size=vocabulary.get_task_size(task.name),
-                in_features=cemb_dim * 2,
+                in_features=encoder_out_dim,
                 padding_index=vocabulary.categorical_pad_token_index)
             for task in self.tasks.values()
-            if task.categorical and task.name not in {main_task, "token_lm"}
+            if task.categorical and task.name not in {main_task, "lm_token"}
         })
+        print(self.linear_secondary_tasks)
 
         # Decoders
         self.decoder = None
@@ -89,7 +99,7 @@ class Pie(pl.LightningModule):
                 vocabulary=vocabulary,
                 cemb_dim=cemb_dim,
                 cemb_encoding_dim=embedding_out_dim,
-                context_dim=encoder_out_dim,  # Bi-directional
+                context_dim=self._context_dim,  # Bi-directional
                 num_layers=cemb_layers,
                 cell_type=cell,
                 dropout=dropout,
@@ -98,7 +108,7 @@ class Pie(pl.LightningModule):
         else:
             self.decoder = LinearDecoder(
                 vocab_size=vocabulary.get_task_size(main_task),
-                in_features=cemb_dim * 2,
+                in_features=self._context_dim,
                 padding_index=vocabulary.categorical_pad_token_index
             )
 
@@ -115,8 +125,8 @@ class Pie(pl.LightningModule):
 
         self._weights = {
             "annotation": 1.0,
-            "lm_fwd": 1.0,
-            "lm_bwd": 1.0,
+            "lm_fwd": .2,
+            "lm_bwd": .2,
             **{
                 task: 1.0
                 for task in self.linear_secondary_tasks
@@ -145,12 +155,31 @@ class Pie(pl.LightningModule):
         # Encoder
         emb = F.dropout(emb, p=self.dropout, training=self.training)
         # enc_outs: torch.Size([Max(NBWords), BatchSize, NBLayers*HiddenSize])
-        encoded_sentences = self.encoder(emb, sequence_length)
+        encoded_sentences: List[torch.Tensor] = self.encoder(emb, sequence_length)
+
+        # Compute secondary tasks
+        secondary_tasks = {
+            task: module(encoded_sentences[-1])  # Compute a last layer
+            for task, module in self.linear_secondary_tasks.items()
+        }
+
         # get_context(outs, wemb, wlen, self.tasks[task]['context'])
         if isinstance(self.decoder, AttentionalDecoder):
             # cemb_outs = F.dropout(cemb_outs, p=self.dropout, training=self.training)
             # context: torch.Size([Batch Size * Max Length, 2 * Hidden Size]) <--- PROBLEM
-            single_encoded_sentence = flatten_padded_batch(encoded_sentences[-1], sequence_length)
+            if self.use_secondary_tasks_decision:
+                single_encoded_sentence = flatten_padded_batch(
+                    torch.cat([
+                        encoded_sentences[-1],
+                        *secondary_tasks.values()
+                    ], dim=-1),
+                    sequence_length
+                )
+            else:
+                single_encoded_sentence = flatten_padded_batch(
+                    encoded_sentences[-1],
+                    sequence_length
+                )
             # Use last layer enc_outs[-1]
             logits = self.decoder(encoded_words=encoded_words, lengths=tokens_length,
                                   encoded_sentence=single_encoded_sentence, train_or_eval=train_or_eval,
@@ -158,7 +187,7 @@ class Pie(pl.LightningModule):
         else:
             logits = self.decoder(encoded=encoded_sentences)
 
-        return logits, emb, encoded_sentences
+        return logits, emb, encoded_sentences, secondary_tasks
 
     def common_train_val_step(self, batch, batch_idx):
         x, gt = batch
@@ -167,7 +196,7 @@ class Pie(pl.LightningModule):
         assert sum(sequence_length).item() == tokens.shape[1], "Number of words accross sentence should match " \
                                                                "unrolled tokens"
 
-        (loss_matrix_probs, hyps, final_scores), emb, enc_outs = self.proj(
+        (loss_matrix_probs, hyps, final_scores), emb, enc_outs, secondary_tasks = self.proj(
             tokens, tokens_length, sequence_length,
             train_or_eval=True,
             max_seq_len=tokens_length.max()
@@ -176,11 +205,20 @@ class Pie(pl.LightningModule):
         # out_subwords = pad_sequence(loss_matrix_probs, padding_value=self._tokenizer.token_to_id("[PAD]"))
         # Decoder loss
         losses = {
-            "loss_annotation": F.cross_entropy(
+            "loss_main_task": F.cross_entropy(
                 input=loss_matrix_probs.view(-1, loss_matrix_probs.shape[-1]),
                 target=tokens.view(-1),
                 ignore_index=self._vocabulary.token_pad_index
-            )
+            ),
+            **{
+                f"loss_{task}": F.cross_entropy(
+                    input=secondary_tasks[task].view(-1, secondary_tasks[task].shape[-1]),
+                    target=gt["categoricals"][task].view(-1),
+                    ignore_index=self._vocabulary.token_pad_index
+                )
+                for task in gt["categoricals"]  # Quickfix as LEMMA is main task now
+                if task not in {self.main_task, "lm_token"}
+            }
         }
 
         # (LM)
