@@ -1,5 +1,6 @@
 from typing import List, Tuple, Dict
 
+import random
 import torch
 from torch.utils.data import Dataset
 from torch.nn.utils.rnn import pad_sequence
@@ -25,6 +26,13 @@ class GroundTruthDataset(Dataset):
         self.pad_index = self.tokenizer.token_to_id("[PAD]")
         self.bos_index = self.tokenizer.token_to_id("[BOS]")
         self.eos_index = self.tokenizer.token_to_id("[EOS]")
+
+    def downscale(self, ratio: float, shuffle: bool = False) -> int:
+        end = int(len(self.annotations) * ratio)
+        if shuffle:
+            random.shuffle(self.annotations)
+        self.annotations = self.annotations[:end]
+        return end
 
     def _read(self):
         if self.annotation_file.endswith(".tsv"):

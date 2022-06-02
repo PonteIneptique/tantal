@@ -3,6 +3,8 @@ from torch.utils.data import DataLoader
 import pytorch_lightning as pl
 from tantal.modules.pie.main import Pie
 from tantal.data.train import GroundTruthDataset
+from tantal.data.tokens.create import create_tokenizer, create_trainer
+from tantal.data.tokens.train import parse_file
 from tantal.data.vocabulary import Vocabulary, Task
 from tokenizers import Tokenizer
 
@@ -28,7 +30,7 @@ vocabulary = Vocabulary(
 
 train_dataset = GroundTruthDataset(TRAIN_FILE, vocabulary=vocabulary)
 train_dataset.fit_vocab()
-
+train_dataset.downscale(.1)
 train_loader = DataLoader(
     train_dataset,
     collate_fn=train_dataset.collate_fn,
@@ -36,6 +38,7 @@ train_loader = DataLoader(
 )
 
 dev_dataset = GroundTruthDataset(DEV_FILE, vocabulary=vocabulary)
+dev_dataset.downscale(.1)
 dev_loader = DataLoader(
     dev_dataset,
     collate_fn=dev_dataset.collate_fn,
