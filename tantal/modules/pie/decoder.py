@@ -96,13 +96,14 @@ class AttentionalDecoder(nn.Module):
         hidden, batch, device = None, encoded_words.size(1), encoded_words.device
 
         inp = torch.zeros(batch, dtype=torch.int64, device=device) + bos
-        hyps: List[Tuple[int]] = []
+        #hyps: List[Tuple[int]] = []
         final_scores = torch.tensor([0 for _ in range(batch)], dtype=torch.float64, device="cpu")
 
         # To make a "character" level loss, we'll append to a loss matrix each probs
         #  It necessarily starts with <BOS>
         loss_matrix_probs: Optional[torch.Tensor] = None
         if train_or_eval:
+            orig_max_seq_len = max_seq_len
             loss_matrix_probs = torch.full(
                 (max_seq_len, batch, self.vocabulary.tokenizer_size),
                 .0,
@@ -168,11 +169,12 @@ class AttentionalDecoder(nn.Module):
 
             # We set the score where we have EOS predictions as 0
             score[inp == eos] = 0
+
             # So that we can add the score to finale scores
             final_scores[tensor_to_original_batch_indexes] += score.cpu()
 
             # We add this new output to the final hypothesis
-            hyps.append(seq_output.tolist())
+            #hyps.append(seq_output.tolist())
 
             # If there nothing else than EOS, it's the end of the prediction time
             if non_eos.sum() == 0:
@@ -205,14 +207,14 @@ class AttentionalDecoder(nn.Module):
             max_seq_len = lengths.max()
             encoded_words = encoded_words[:max_seq_len, keep, :]
 
-        hyps = [hyp for hyp in zip(*hyps)]
-        final_scores = [s / (len(hyp) + TINY) for s, hyp in zip(final_scores, hyps)]
-        if train_or_eval and loss_matrix_probs.shape[0] < max_seq_len.item():
+        #hyps = [hyp for hyp in zip(*hyps)]
+        #final_scores = [s / (len(hyp) + TINY) for s, hyp in zip(final_scores, hyps)]
+        if train_or_eval and loss_matrix_probs.shape[0] < orig_max_seq_len:
             loss_matrix_probs = loss_matrix_probs.expand(
-                max_seq_len.item(),
+                orig_max_seq_len,
                 *loss_matrix_probs.shape[1:]
             )
-        return loss_matrix_probs, hyps, final_scores
+        return loss_matrix_probs, F.log_softmax(loss_matrix_probs, dim=-1).max(-1)[-1].to(encoded_words.device)
 
 
 def sequential_dropout(inp: torch.Tensor, p: float, training: bool):

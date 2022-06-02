@@ -139,6 +139,12 @@ class Pie(pl.LightningModule):
             if task != "lm_token"
         }
 
+    def get_main_task_gt(self, gt: Dict[str, Dict[str, torch.Tensor]], length: bool = False):
+        if self.tasks[self.main_task].categorical:
+            return gt["categoricals"][self.main_task]
+        else:
+            return gt["non_categoricals"][self.main_task]
+
     def proj(
             self,
             tokens: torch.Tensor,
@@ -202,10 +208,10 @@ class Pie(pl.LightningModule):
         assert sum(sequence_length).item() == tokens.shape[1], "Number of words accross sentence should match " \
                                                                "unrolled tokens"
 
-        (loss_matrix_probs, hyps, final_scores), emb, enc_outs, secondary_tasks = self.proj(
+        (loss_matrix_probs, preds), emb, enc_outs, secondary_tasks = self.proj(
             tokens, tokens_length, sequence_length,
             train_or_eval=True,
-            max_seq_len=tokens_length.max()
+            max_seq_len=self.get_main_task_gt(gt).shape[0]
         )
 
         # out_subwords = pad_sequence(loss_matrix_probs, padding_value=self._tokenizer.token_to_id("[PAD]"))
@@ -213,7 +219,7 @@ class Pie(pl.LightningModule):
         losses = {
             "loss_main_task": F.cross_entropy(
                 input=loss_matrix_probs.view(-1, loss_matrix_probs.shape[-1]),
-                target=tokens.view(-1),
+                target=self.get_main_task_gt(gt).view(-1),
                 ignore_index=self._vocabulary.token_pad_index
             ),
             **{
@@ -260,8 +266,8 @@ class Pie(pl.LightningModule):
             self._weights.get(k[5:], 1) * losses[k]
             for k in losses
         ])
-        return hyps, loss, {
-            task: F.softmax(out, dim=-1)
+        return preds, loss, {
+            task: F.softmax(out, dim=-1).max(-1)
             for task, out in secondary_tasks.items()
         }
 
@@ -270,25 +276,32 @@ class Pie(pl.LightningModule):
         return hyps, secondary_tasks
 
     def training_step(self, batch, batch_idx):
-        _, loss, secondary_tasks = self.common_train_val_step(batch, batch_idx)
-        self.log("train_loss", loss)
+        preds, loss, secondary_tasks = self.common_train_val_step(batch, batch_idx)
+        self.log("train_loss", loss, batch_size=batch[0]["token__sequence__length"].shape[0])
         return loss
 
+    #def _compute_metrics(self, preds, secondary_task, ground_truth):
+
     def validation_step(self, batch, batch_idx):
-        hyps, loss, secondary_tasks = self.common_train_val_step(batch, batch_idx)
-        self.log("dev_loss", loss)
+        preds, loss, secondary_tasks = self.common_train_val_step(batch, batch_idx)
+        self.log("dev_loss", loss, batch_size=batch[0]["token__sequence__length"].shape[0])
 
         # Batch = x, y
         for task in self.tasks.values():
+            if task.name == "lm_token":
+                continue
             if task.name == self.main_task:
-                out = torch.tensor(hyps).transpose(1, 0)
+                out = preds.transpose(1, 0)
             else:
-                out = secondary_tasks[task.name]
+                _, out = secondary_tasks[task.name]  # First is probability
+
             if task.categorical:
                 gt = batch[1]["categoricals"][task.name]
             else:
-                gt = batch[1]["non_categoricals"][task.name]
-            self.accuracy[task.name](out, gt)
+                gt = batch[1]["non_categoricals"][task.name].transpose(1, 0)  #[:, 1:]  # We remove the first dimension
+
+            self.accuracy[task.name](out.cpu(), gt.cpu())
+            self.log(f'{task}_acc', self.accuracy[task.name])
 
         return loss
 
