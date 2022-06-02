@@ -1,7 +1,7 @@
 import os
 from torch.utils.data import DataLoader
 import pytorch_lightning as pl
-from tantal.modules.pie.main import Pie
+from tantal.models.pie import Pie
 from tantal.data.train import GroundTruthDataset
 from tantal.data.tokens.create import create_tokenizer, create_trainer
 from tantal.data.tokens.train import parse_file
