@@ -7,7 +7,7 @@ from torch.nn.utils.rnn import pad_sequence
 from typing import Tuple, Any
 
 from tantal.modules.pie.decoder import LinearDecoder, RNNEncoder, AttentionalDecoder
-from tantal.modules import initialization
+from tantal.modules.pie.embeddings import PieEmbeddings
 from tantal.data.vocabulary import Vocabulary
 from tantal.modules.pie.utils import pad_flat_batch, flatten_padded_batch, pad
 
@@ -51,21 +51,15 @@ class Pie(pl.LightningModule):
         self.tasks = self._vocabulary.tasks
         self.main_task = main_task
 
-        # Embeddings
-        self.embedding = nn.Embedding(
-            vocabulary.tokenizer_size,
-            cemb_dim,
-            padding_idx=vocabulary.token_pad_index
+        self.embedding = PieEmbeddings(
+            vocab_size=self._vocabulary.tokenizer_size,
+            cemb_dim=cemb_dim,
+            padding_int=self._vocabulary.token_pad_index,
+            cell=cell,
+            dropout=dropout,
+            num_layers=num_layers,
+            init=init_rnn
         )
-        # init embeddings
-        initialization.init_embeddings(self.embedding)
-
-        self.embedding_ngram_encoder = getattr(nn, cell)(
-            cemb_dim, cemb_dim, bidirectional=True,
-            num_layers=num_layers, dropout=dropout
-        )
-        initialization.init_rnn(self.embedding_ngram_encoder, scheme=init_rnn)
-
         # Bidirectional so embedding_encoder_out = 2*cemb_dim
         embedding_out_dim = 2 * cemb_dim
 
@@ -78,6 +72,15 @@ class Pie(pl.LightningModule):
             init_rnn=init_rnn
         )
         encoder_out_dim = 2 * hidden_size
+
+        self.linear_secondary_tasks = nn.ModuleDict({
+            task.name: LinearDecoder(
+                vocab_size=vocabulary.get_task_size(task.name),
+                in_features=cemb_dim * 2,
+                padding_index=vocabulary.categorical_pad_token_index)
+            for task in self.tasks.values()
+            if task.categorical and task.name not in {main_task, "token_lm"}
+        })
 
         # Decoders
         self.decoder = None
@@ -99,15 +102,6 @@ class Pie(pl.LightningModule):
                 padding_index=vocabulary.categorical_pad_token_index
             )
 
-        self.linear_secondary_tasks = {
-            task.name: LinearDecoder(
-                vocab_size=vocabulary.get_task_size(task.name),
-                in_features=cemb_dim * 2,
-                padding_index=vocabulary.categorical_pad_token_index)
-            for task in self.tasks.values()
-            if task.categorical
-        }
-
         self.lm_fwd_decoder = LinearDecoder(
                 vocab_size=vocabulary.get_task_size("lm_token"),
                 in_features=hidden_size,
@@ -122,42 +116,12 @@ class Pie(pl.LightningModule):
         self._weights = {
             "annotation": 1.0,
             "lm_fwd": 1.0,
-            "lm_bwd": 1.0
+            "lm_bwd": 1.0,
+            **{
+                task: 1.0
+                for task in self.linear_secondary_tasks
+            }
         }
-
-    def _embedding(self, tokens, tokens_length, sequence_length):
-        """ A mix of embedding.RNNEmbedding and Word Embedding
-
-        :returns: Embedding projections and Inside-Word level Encoded Embeddings
-        """
-        tokens = self.embedding(tokens)
-        # rnn
-        hidden = None
-        _, sort = torch.sort(tokens_length, descending=True)
-        _, unsort = sort.sort()
-        tokens, tokens_length = tokens[:, sort], tokens_length[sort]
-
-        if isinstance(self.embedding_ngram_encoder, nn.RNNBase):
-            outs, emb = self.embedding_ngram_encoder(
-                nn.utils.rnn.pack_padded_sequence(tokens, tokens_length.cpu()), hidden)
-            outs, _ = nn.utils.rnn.pad_packed_sequence(outs)
-            if isinstance(emb, tuple):
-                emb, _ = emb
-        else:
-            outs, (emb, _) = self.embedding_ngram_encoder(tokens, hidden, tokens_length)
-
-        # (max_seq_len x batch * nwords x emb_dim)
-        outs, emb = outs[:, unsort], emb[:, unsort]
-        # (layers * 2 x batch x hidden) -> (layers x 2 x batch x hidden)
-        emb = emb.view(self.num_layers, 2, len(tokens_length), -1)
-        # use only last layer
-        emb = emb[-1]
-        # (2 x batch x hidden) - > (batch x 2 * hidden)
-        emb = emb.transpose(0, 1).contiguous().view(len(tokens_length), -1)
-        # (batch x 2 * hidden) -> (nwords x batch x 2 * hidden)
-        emb = pad_flat_batch(emb, sequence_length, maxlen=max(sequence_length).item())
-
-        return emb, outs
 
     def proj(
             self,
@@ -176,7 +140,7 @@ class Pie(pl.LightningModule):
         # Embedding
         # emb: torch.Size([Max(NBWords), BatchSize, 2*Character Embedding Dim])
         # cemb_outs: torch.Size([MaxSubWordCount(Words), Sum(NBWords), 2*Character Embedding Dim])
-        emb, encoded_words = self._embedding(tokens, tokens_length, sequence_length)
+        emb, encoded_words = self.embedding(tokens, tokens_length, sequence_length)
 
         # Encoder
         emb = F.dropout(emb, p=self.dropout, training=self.training)
