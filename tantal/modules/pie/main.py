@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 import pytorch_lightning as pl
+import torchmetrics
 
 from tantal.modules.pie.decoder import LinearDecoder, RNNEncoder, AttentionalDecoder
 from tantal.modules.pie.embeddings import PieEmbeddings
@@ -90,7 +91,6 @@ class Pie(pl.LightningModule):
             for task in self.tasks.values()
             if task.categorical and task.name not in {main_task, "lm_token"}
         })
-        print(self.linear_secondary_tasks)
 
         # Decoders
         self.decoder = None
@@ -131,6 +131,12 @@ class Pie(pl.LightningModule):
                 task: 1.0
                 for task in self.linear_secondary_tasks
             }
+        }
+
+        self.accuracy: Dict[str, torchmetrics.Accuracy] = {
+            task: torchmetrics.Accuracy()
+            for task in self.tasks
+            if task != "lm_token"
         }
 
     def proj(
@@ -254,20 +260,41 @@ class Pie(pl.LightningModule):
             self._weights.get(k[5:], 1) * losses[k]
             for k in losses
         ])
-        return hyps, loss
+        return hyps, loss, {
+            task: F.softmax(out, dim=-1)
+            for task, out in secondary_tasks.items()
+        }
 
     def forward(self, batch, batch_idx):
-        return self.proj(batch)[-1]
+        (_, hyps, _), _, _, secondary_tasks = self.proj(**batch)
+        return hyps, secondary_tasks
 
     def training_step(self, batch, batch_idx):
-        _, loss = self.common_train_val_step(batch, batch_idx)
+        _, loss, secondary_tasks = self.common_train_val_step(batch, batch_idx)
         self.log("train_loss", loss)
         return loss
 
     def validation_step(self, batch, batch_idx):
-        dec_out, loss = self.common_train_val_step(batch, batch_idx)
+        hyps, loss, secondary_tasks = self.common_train_val_step(batch, batch_idx)
         self.log("dev_loss", loss)
+
+        # Batch = x, y
+        for task in self.tasks.values():
+            if task.name == self.main_task:
+                out = torch.tensor(hyps).transpose(1, 0)
+            else:
+                out = secondary_tasks[task.name]
+            if task.categorical:
+                gt = batch[1]["categoricals"][task.name]
+            else:
+                gt = batch[1]["non_categoricals"][task.name]
+            self.accuracy[task.name](out, gt)
+
         return loss
+
+    def validation_epoch_end(self, outputs=None) -> None:
+        for task in self.accuracy:
+            self.log(f'{task}_acc', self.accuracy[task])
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=1e-3)

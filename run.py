@@ -30,7 +30,7 @@ vocabulary = Vocabulary(
 
 train_dataset = GroundTruthDataset(TRAIN_FILE, vocabulary=vocabulary)
 train_dataset.fit_vocab()
-train_dataset.downscale(.1)
+train_dataset.downscale(.01)
 train_loader = DataLoader(
     train_dataset,
     collate_fn=train_dataset.collate_fn,
@@ -38,7 +38,7 @@ train_loader = DataLoader(
 )
 
 dev_dataset = GroundTruthDataset(DEV_FILE, vocabulary=vocabulary)
-dev_dataset.downscale(.1)
+dev_dataset.downscale(.01)
 dev_loader = DataLoader(
     dev_dataset,
     collate_fn=dev_dataset.collate_fn,
