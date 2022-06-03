@@ -94,7 +94,7 @@ def create_trainer(model: str, vocabulary: int, special_tokens: List[str]) -> tr
     """
     if model.lower() not in AvailableTrainer:
         raise UnknownTokenizerModel(model)
-    return AvailableTrainer[model](vocab_size=vocabulary, special_tokens=special_tokens)
+    return AvailableTrainer[model](vocab_size=vocabulary, special_tokens=special_tokens, unk_id=0)
 
 
 if __name__ == "__main__":

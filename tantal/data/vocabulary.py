@@ -7,6 +7,7 @@ import json
 from tokenizers import Tokenizer, Encoding
 
 Task = namedtuple("Task", ["name", "categorical", "unknown_ok"])
+Prediction = namedtuple("Prediction", ["prob", "value"])
 
 # ["PRE", "ADV"] -> [0, 1]
 CategoricalSentenceEncoding = List[int]
@@ -69,7 +70,7 @@ class Vocabulary:
 
     def _build_reverse(self) -> None:
         self.tasks_vocab_decoder = {
-            task: tuple(vocab.values())
+            task: tuple(vocab.keys())
             for task, vocab in self.tasks_vocab.items()
         }
 
@@ -98,6 +99,9 @@ class Vocabulary:
             return [self.tasks_vocab_decoder[task][codepoint] for codepoint in sequence]
         else:
             return self.tokenizer.decode(sequence, skip_special_tokens=True)
+
+    def decode_batch(self, sequence: List[List[int]], task: str) -> List[List[str]]:
+        return [self.decode(seq, task) for seq in sequence]
 
     def build_from_sentences(
         self,

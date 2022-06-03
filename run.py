@@ -14,7 +14,7 @@ DEV_FILE = "../LASLA/mood-tense-voice-pft-clitics/dev.tsv"
 
 if not os.path.exists(TOKENIZER_PATH):
     tokenizer = create_tokenizer("unigram", "NFKD,Lowercase", "Whitespace,Digits")
-    tokenizer_trainer = create_trainer("unigram", 1000, special_tokens=["[PAD]", "[EOS]", "[BOS]"])
+    tokenizer_trainer = create_trainer("unigram", 2000, special_tokens=["[UNK]", "[PAD]", "[EOS]", "[BOS]"])
     tokenizer.train_from_iterator(parse_file(TRAIN_FILE), trainer=tokenizer_trainer)
     tokenizer.save(TOKENIZER_PATH)
 else:
@@ -52,4 +52,4 @@ model = Pie(
 )
 trainer = pl.Trainer(gpus=1, max_epochs=50, gradient_clip_val=5)
 trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=dev_loader)
-trainer.save_checkpoint("same_config.model")
+trainer.save_checkpoint("heavier.model")

@@ -9,7 +9,7 @@ from torch import optim
 
 from tantal.modules.pie.decoder import LinearDecoder, RNNEncoder, AttentionalDecoder
 from tantal.modules.pie.embeddings import PieEmbeddings
-from tantal.data.vocabulary import Vocabulary, Task
+from tantal.data.vocabulary import Vocabulary, Task, Prediction
 from tantal.modules.pie.utils import flatten_padded_batch, pad
 from ranger import Ranger
 
@@ -278,9 +278,13 @@ class Pie(pl.LightningModule):
             for task, out in secondary_tasks.items()
         }
 
-    def forward(self, batch, batch_idx):
-        (_, hyps, _), _, _, secondary_tasks = self.proj(**batch)
-        return hyps, secondary_tasks
+    def forward(self, batch):
+        tokens, tokens_length, sequence_length = batch["token"], \
+                                                 batch["token__length"], \
+                                                 batch["token__sequence__length"]
+        (_, preds), _, _, secondary_tasks = self.proj(tokens, tokens_length, sequence_length)
+        preds = preds.transpose(1, 0)
+        return preds, {task: prediction.transpose(1, 0) for task, prediction in secondary_tasks.items()}
 
     def training_step(self, batch, batch_idx):
         preds, loss, loss_dict, secondary_tasks = self.common_train_val_step(batch, batch_idx)

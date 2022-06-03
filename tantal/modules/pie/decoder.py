@@ -101,14 +101,12 @@ class AttentionalDecoder(nn.Module):
 
         # To make a "character" level loss, we'll append to a loss matrix each probs
         #  It necessarily starts with <BOS>
-        loss_matrix_probs: Optional[torch.Tensor] = None
-        if train_or_eval:
-            orig_max_seq_len = max_seq_len
-            loss_matrix_probs = torch.full(
-                (max_seq_len, batch, self.vocabulary.tokenizer_size),
-                .0,
-                device=device
-            )
+        orig_max_seq_len = max_seq_len
+        loss_matrix_probs = torch.full(
+            (max_seq_len, batch, self.vocabulary.tokenizer_size),
+            .0,
+            device=device
+        )
 
         # As we go, we'll reduce the tensor size by popping finished prediction
         #  To keep adding new characters to the right words, we
@@ -164,8 +162,7 @@ class AttentionalDecoder(nn.Module):
             seq_output[tensor_to_original_batch_indexes] = inp
 
             # If we are training, we also set-up the same thing for the loss_matrix_probs#
-            if train_or_eval:
-                loss_matrix_probs[char_number][tensor_to_original_batch_indexes] = outs
+            loss_matrix_probs[char_number][tensor_to_original_batch_indexes] = outs
 
             # We set the score where we have EOS predictions as 0
             score[inp == eos] = 0
