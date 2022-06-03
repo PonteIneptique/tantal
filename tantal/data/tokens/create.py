@@ -94,11 +94,11 @@ def create_trainer(model: str, vocabulary: int, special_tokens: List[str]) -> tr
     """
     if model.lower() not in AvailableTrainer:
         raise UnknownTokenizerModel(model)
-    return AvailableTrainer[model](vocab_size=vocabulary, special_tokens=special_tokens, unk_id=0)
+    return AvailableTrainer[model](vocab_size=vocabulary, special_tokens=special_tokens, unk_token="[UNK]")
 
 
 if __name__ == "__main__":
     from .train import parse
     tok = create_tokenizer("wordpiece", "NFKC,Lowercase", "Whitespace,Digits")
-    tok.train_from_iterator(parse(), trainer=create_trainer("wordpiece", 20000, ["<BOS>", "<EOS>", "<PAD>"]))
+    tok.train_from_iterator(parse(), trainer=create_trainer("wordpiece", 20000, [[],"<BOS>", "<EOS>", "<PAD>"]))
     print(tok)
