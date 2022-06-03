@@ -128,7 +128,7 @@ class Vocabulary:
     def dump(self) -> str:
         return json.dumps({
             "tokenizer": json.loads(self.tokenizer.to_str()),
-            "tasks": [list(task) for task in self.tasks if task != "lm_token"],
+            "tasks": [list(self.tasks[task]) for task in self.tasks if task != "lm_token"],
             "vocabulary": self.tasks_vocab
         })
 
@@ -143,6 +143,7 @@ class Vocabulary:
     def from_string(cls, string) -> "Vocabulary":
         dictionary = json.loads(string)
         tokenizer = Tokenizer.from_str(json.dumps(dictionary["tokenizer"]))
+        print(dictionary["tasks"])
         o = cls(
             tokenizer=tokenizer,
             tasks=[Task(*task) for task in dictionary["tasks"]]
@@ -150,3 +151,11 @@ class Vocabulary:
         o.set_vocabulary(dictionary["vocabulary"])
         return o
 
+    @classmethod
+    def from_file(cls, filepath) -> "Vocabulary":
+        with open(filepath) as f:
+            return cls.from_string(f.read())
+
+    def to_file(self, filepath):
+        with open(filepath, "w") as f:
+            return f.write(self.dump())
