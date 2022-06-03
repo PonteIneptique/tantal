@@ -40,7 +40,7 @@ def get_normalizer(normalization: str) -> normalizers.Normalizer:
             if normalizer_exists(norm)
         ])
     elif normalizer_exists(normalization):
-        return getattr(normalizers, normalization)
+        return getattr(normalizers, normalization)()
 
 
 def get_pretokenizer(tokenization: str) -> tokenizers.Tokenizer:

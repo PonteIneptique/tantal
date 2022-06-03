@@ -96,7 +96,8 @@ class Vocabulary:
 
     def decode(self, sequence: List[int], task: str) -> List[str]:
         if self.tasks[task].categorical:
-            return [self.tasks_vocab_decoder[task][codepoint] for codepoint in sequence]
+            return [self.tasks_vocab_decoder[task][codepoint]
+                    for codepoint in sequence if codepoint != self.categorical_pad_token_index]
         else:
             return self.tokenizer.decode(sequence, skip_special_tokens=True)
 

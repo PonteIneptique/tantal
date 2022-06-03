@@ -1,17 +1,23 @@
 from typing import List, Dict
+from collections import namedtuple
 
 import torch
-import torch.nn as nn
+from torch import optim
+from torch import nn
 from torch.nn import functional as F
+
 import pytorch_lightning as pl
 import torchmetrics
-from torch import optim
 
 from tantal.modules.pie.decoder import LinearDecoder, RNNEncoder, AttentionalDecoder
 from tantal.modules.pie.embeddings import PieEmbeddings
-from tantal.data.vocabulary import Vocabulary, Task, Prediction
+from tantal.data.vocabulary import Vocabulary, Task
+from tantal.utils import ScoreWatcher
 from tantal.modules.pie.utils import flatten_padded_batch, pad
 from ranger import Ranger
+
+
+Score = namedtuple("Score", ["score", "steps"])
 
 
 class Pie(pl.LightningModule):
@@ -127,13 +133,17 @@ class Pie(pl.LightningModule):
         self.register_buffer('lm_nll_weight', nll_weight)
 
         self._weights = {
-            "annotation": 1.0,
+            "main_task": 1.0,
             "lm_fwd": .2,
             "lm_bwd": .2,
             **{
                 task: 1.0
                 for task in self.linear_secondary_tasks
             }
+        }
+        self._watchers: Dict[str, ScoreWatcher] = {
+            key: ScoreWatcher(10000)
+            for key in self._weights
         }
 
         for task in self.tasks:
@@ -341,6 +351,17 @@ class Pie(pl.LightningModule):
                 )
                 self.log(f'acc_{task.name}_token_level', attribute, on_epoch=True, prog_bar=True)
 
+        return loss, loss_dict
+
+    def validation_epoch_end(self, outputs=None) -> None:
+        loss, loss_dict = outputs[0]
+        for key in loss_dict:
+            self_key = key[5:]
+            _, self._weights[self_key] = self._watchers[self_key].update_steps_on_mode(
+                loss_dict[key],
+                self._weights[self_key],
+                task=self_key
+            )
         return loss
 
     # def validation_epoch_end(self, outputs=None) -> None:
