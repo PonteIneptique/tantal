@@ -143,7 +143,6 @@ class Vocabulary:
     def from_string(cls, string) -> "Vocabulary":
         dictionary = json.loads(string)
         tokenizer = Tokenizer.from_str(json.dumps(dictionary["tokenizer"]))
-        print(dictionary["tasks"])
         o = cls(
             tokenizer=tokenizer,
             tasks=[Task(*task) for task in dictionary["tasks"]]

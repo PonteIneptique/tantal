@@ -1,0 +1,4 @@
+pytorch-lightning~=1.6.3
+tokenizers~=0.12.1
+# torch~=1.11.0+cu113
+ranger @ git+https://github.com/PonteIneptique/Ranger-Deep-Learning-Optimizer@b2399ffbdcad6d286a3a33098294654b0ec8f8cc#egg=ranger

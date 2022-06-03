@@ -10,7 +10,7 @@ model = Pie.load_from_checkpoint(
 )
 # model.load_from_checkpoint() Need implementation ?
 
-
+Vocabulary.from_file("vocabulary.json")
 data = model._vocabulary.encode_input(["Ego", "sum", "pulcher", "."])
 print(data)
 

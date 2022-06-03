@@ -5,11 +5,13 @@ import torch.nn as nn
 from torch.nn import functional as F
 import pytorch_lightning as pl
 import torchmetrics
+from torch import optim
 
 from tantal.modules.pie.decoder import LinearDecoder, RNNEncoder, AttentionalDecoder
 from tantal.modules.pie.embeddings import PieEmbeddings
 from tantal.data.vocabulary import Vocabulary, Task
 from tantal.modules.pie.utils import flatten_padded_batch, pad
+from ranger import Ranger
 
 
 class Pie(pl.LightningModule):
@@ -298,13 +300,12 @@ class Pie(pl.LightningModule):
         preds, loss, loss_dict, secondary_tasks = self.common_train_val_step(batch, batch_idx)
         self.log("dev_loss", loss, batch_size=batch[0]["token__sequence__length"].shape[0])
         for task in loss_dict:
-            if task != "loss_main_task":
-                self.log(
-                    "val_" + task,
-                    loss_dict[task],
-                    batch_size=batch[0]["token__sequence__length"].shape[0],
-                    prog_bar=True
-                )
+            self.log(
+                "val_" + task,
+                loss_dict[task],
+                batch_size=batch[0]["token__sequence__length"].shape[0],
+                prog_bar=True
+            )
         # Batch = x, y
         for task in self.tasks.values():
             if task.name == "lm_token":
@@ -343,5 +344,23 @@ class Pie(pl.LightningModule):
     #        self.log(f'{task}_acc', self.accuracy[task])
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=1e-3)
-        return optimizer
+        optimizer = Ranger(self.parameters(), lr=1e-3)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode="min",
+            verbose=False,
+            factor=.6,
+            patience=11,
+            min_lr=1e-6
+        )
+        return (
+            [optimizer],
+            [
+                {
+                    "scheduler": scheduler,
+                    "interval": "epoch",
+                    "monitor": "val_loss_main_task",
+                    "frequency": 1
+                }
+            ]
+        )

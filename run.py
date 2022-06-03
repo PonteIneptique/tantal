@@ -27,10 +27,10 @@ vocabulary = Vocabulary(
         Task("pos", categorical=True, unknown_ok=False)
     ]
 )
-vocabulary.to_file("vocabulary.json")
-
 train_dataset = GroundTruthDataset(TRAIN_FILE, vocabulary=vocabulary)
 train_dataset.fit_vocab(max_lm_tokens=3000)
+vocabulary.to_file("vocabulary.json")
+
 #train_dataset.downscale(.1)
 train_loader = DataLoader(
     train_dataset,
@@ -48,8 +48,8 @@ dev_loader = DataLoader(
 model = Pie(
     vocabulary,
     main_task="lemma",
-    cemb_dim=100, cemb_layers=1, hidden_size=128, num_layers=2
+    cemb_dim=200, cemb_layers=2, hidden_size=256, num_layers=1
 )
 trainer = pl.Trainer(gpus=1, max_epochs=50, gradient_clip_val=5)
 trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=dev_loader)
-trainer.save_checkpoint("here3.model")
+trainer.save_checkpoint("same_config.model")
