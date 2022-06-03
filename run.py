@@ -13,8 +13,8 @@ from tantal.data.vocabulary import Vocabulary, Task
 from tokenizers import Tokenizer
 
 TOKENIZER_PATH = "./example-tokenizer.json"
-TRAIN_FILE = "./exp_data/latin/train.tsv"
-DEV_FILE = "./exp_data/latin/dev.tsv"
+TRAIN_FILE = "./exp_data/fro/train.tsv"
+DEV_FILE = "./exp_data/fro/dev.tsv"
 
 if not os.path.exists(TOKENIZER_PATH):
     tokenizer = create_tokenizer("unigram", "NFKD", "Whitespace,Digits")
@@ -28,13 +28,7 @@ vocabulary = Vocabulary(
     tokenizer=tokenizer,
     tasks=[
         Task("lemma", categorical=False, unknown_ok=True),
-        Task("pos", categorical=True, unknown_ok=False),
-        Task("Person", categorical=True, unknown_ok=False),
-        Task("Mood_Tense_Voice", categorical=True, unknown_ok=False),
-        Task("Deg", categorical=True, unknown_ok=False),
-        Task("Case", categorical=True, unknown_ok=False),
-        Task("Gend", categorical=True, unknown_ok=False),
-        Task("Dis", categorical=True, unknown_ok=False)
+        Task("POS", categorical=True, unknown_ok=True)
         #pos	Dis	Entity	Gend	Numb	Case	Deg	Mood_Tense_Voice	Person
     ]
 )
@@ -46,7 +40,7 @@ vocabulary.to_file("vocabulary.json")
 train_loader = DataLoader(
     train_dataset,
     collate_fn=train_dataset.collate_fn,
-    batch_size=128
+    batch_size=64
 )
 
 dev_dataset = GroundTruthDataset(DEV_FILE, vocabulary=vocabulary)
@@ -54,7 +48,7 @@ dev_dataset = GroundTruthDataset(DEV_FILE, vocabulary=vocabulary)
 dev_loader = DataLoader(
     dev_dataset,
     collate_fn=dev_dataset.collate_fn,
-    batch_size=128
+    batch_size=64
 )
 model = Pie(
     vocabulary,
