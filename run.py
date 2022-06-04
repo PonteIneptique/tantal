@@ -6,28 +6,24 @@ from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, TQDMProg
 
 from tantal.models.pie import Pie
 from tantal.data.train import GroundTruthDataset
-from tantal.data.tokens.create import create_tokenizer, create_trainer
+from tantal.data.tokens.create import create_tokenizer, create_trainer, train_for_bytes
 from tantal.data.tokens.train import parse_file
 from tantal.data.vocabulary import Vocabulary, Task
 from tokenizers import Tokenizer
 
-TOKENIZER_PATH = "saved_models/fro/example-tokenizer.json"
+TOKENIZER_PATH = "fro.json"
 TRAIN_FILE = "./exp_data/fro/train.tsv"
 DEV_FILE = "./exp_data/fro/dev.tsv"
-CHAR_LEVEL = False
+CHAR_LEVEL = True
 
 if not os.path.exists(TOKENIZER_PATH):
     if CHAR_LEVEL:
-        raise Exception
-        tokenizer = create_tokenizer("bpe", "NFKD", "Whitespace,Digits")
-        # train_for_bytes = train_for_bytes(
-        #       tokenizer,
-        #       parse_file(TRAIN_FILE),
-        #       trainer = tokenizer_trainer
-        #       special_tokens=["[UNK]", "[PAD]", "[EOS]", "[BOS]"]
-        #   )
-        tokenizer_trainer = create_trainer("bpe", 500, special_tokens=["[UNK]", "[PAD]", "[EOS]", "[BOS]"])
-        tokenizer.train_from_iterator(parse_file(TRAIN_FILE), trainer=tokenizer_trainer)
+        tokenizer = train_for_bytes(
+            normalization="NFD",
+            iterator_fn=parse_file,
+            iterator_args=(TRAIN_FILE, ),
+            special_tokens=["[UNK]", "[PAD]", "[EOS]", "[BOS]"]
+        )
         tokenizer.save(TOKENIZER_PATH)
     else:
         tokenizer = create_tokenizer("bpe", "NFKD", "Whitespace,Digits")
@@ -66,7 +62,7 @@ dev_loader = DataLoader(
 model = Pie(
     vocabulary,
     main_task="lemma",
-    cemb_dim=200, cemb_layers=2, hidden_size=256, num_layers=1
+    cemb_dim=300, cemb_layers=2, hidden_size=256, num_layers=1
 )
 trainer = pl.Trainer(
     gpus=1,

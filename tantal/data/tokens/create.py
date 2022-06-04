@@ -1,6 +1,6 @@
 import tokenizers
-from tokenizers import Tokenizer, models, normalizers, pre_tokenizers, decoders, trainers
-from typing import Dict, Type, Optional, List
+from tokenizers import Tokenizer, models, normalizers, pre_tokenizers, decoders, trainers, ByteLevelBPETokenizer
+from typing import Dict, Type, Optional, List, Union
 
 AvailableModels: Dict[str, Type[models.Model]] = {
     "unigram": models.Unigram,
@@ -56,11 +56,11 @@ def get_pretokenizer(tokenization: str) -> tokenizers.Tokenizer:
             if pretokenizer_exists(norm)
         ])
     elif pretokenizer_exists(tokenization):
-        return getattr(pre_tokenizers, tokenization)
+        return getattr(pre_tokenizers, tokenization)()
 
 
 def create_tokenizer(
-        model: str,
+        model: Union[str, Tokenizer],
         normalization: Optional[str] = None,
         pretokenizer: Optional[str] = None) -> Tokenizer:
     """ CLI helper for creating a Tokenizer
@@ -70,21 +70,56 @@ def create_tokenizer(
     :param pretokenizer: String where steps of pretokenization are separated by commas, eg. "Whitespace,Digits"
 
     """
-    if model.lower() not in AvailableModels:
-        raise UnknownTokenizerModel(model)
-    tokenizer = Tokenizer(AvailableModels[model]())
+    if not isinstance(model, (ByteLevelBPETokenizer, Tokenizer)):
+        if model.lower() not in AvailableModels:
+            raise UnknownTokenizerModel(model)
+        tokenizer = Tokenizer(AvailableModels[model]())
+    else:
+        tokenizer = model
+
     if normalization:
         tokenizer.normalizer = get_normalizer(normalization)
+
     if pretokenizer:
         tokenizer.pre_tokenizer = get_pretokenizer(pretokenizer)
     else:
         tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel()
-    if model.lower() == "bpe":
-        tokenizer.decoder = decoders.BPEDecoder()
-    elif model.lower() == "wordpiece":
-        tokenizer.decoder = decoders.WordPiece()
+
+    if isinstance(model, str):
+
+        if model.lower() == "bpe":
+            tokenizer.decoder = decoders.BPEDecoder()
+        elif model.lower() == "wordpiece":
+            tokenizer.decoder = decoders.WordPiece()
+        else:
+            tokenizer.decoder = decoders.ByteLevel()
     else:
         tokenizer.decoder = decoders.ByteLevel()
+
+    return tokenizer
+
+
+def train_for_bytes(
+    iterator_fn,
+    iterator_args,
+    normalization: Optional[str] = None,
+    special_tokens: List[str] = None
+) -> Tokenizer:
+    tokenizer = ByteLevelBPETokenizer(add_prefix_space=False, unicode_normalizer="nfd")
+    chars = set()
+    for sentence in iterator_fn(*iterator_args):
+        chars = chars.union(set(tokenizer.normalizer.normalize_str(sentence+sentence.upper())))
+    chars = sorted(list(chars))
+
+    def parser(normalizer):
+        for sentence in iterator_fn(*iterator_args):
+            yield normalizer(sentence)
+            yield normalizer(sentence.upper())
+
+    tokenizer.train_from_iterator(
+        parser(normalizer=tokenizer.normalizer.normalize_str),
+        vocab_size=len(chars), show_progress=True, special_tokens=special_tokens
+    )
     return tokenizer
 
 
