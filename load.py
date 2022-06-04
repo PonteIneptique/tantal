@@ -4,8 +4,8 @@ from tantal.tagger import PredictWrapper
 
 
 model = Pie.load_from_checkpoint(
-    "./test.model",
-    vocabulary=Vocabulary.from_file("vocabulary.json"),
+    "saved_models/fro/test.model",
+    vocabulary=Vocabulary.from_file("saved_models/fro/vocabulary.json"),
     main_task="lemma",
     cemb_dim=200, cemb_layers=2, hidden_size=256, num_layers=1
 )
@@ -16,6 +16,19 @@ tokens = [
     " post tergum ueniat et non lasciua ante faciem prorumpat".split(),
     ['Quid', 'faciat', 'uolt', 'scire', 'Lyris', 'quod', 'sobria', 'fellat']
 ]
+tokens = ["""Philippe de Thaün
+Ad fait une raisun
+Pur pruveires guarnir
+De la lei maintenir. """, """
+A sun uncle l'enveiet,
+Quë amender la deiet
+Si rien i ad mesdit
+Ne en fait ne en escrit
+A Unfrei de Thaün,
+Le chapelein Yhun
+E seneschal lu rei.""", """Icho vus di par mei."""]
+tokens = ["Quel part que Bos irra irrunt.", "Quant Bos ot od sei ces qu'il volt, E espié e veü ot Liquels Petreïus esteit Ki tuz les altres mainteneit"]
+tokens = [sent.split() for sent in tokens]
 
 print(tokens)
 predict = PredictWrapper(model)

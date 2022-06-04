@@ -45,6 +45,8 @@ class Pie(pl.LightningModule):
             use_secondary_tasks_decision: bool = True
     ):
         super(Pie, self).__init__()
+        self.save_hyperparameters()
+
         # args
         self.cemb_dim: int = cemb_dim
         self.hidden_size: int = hidden_size
@@ -66,6 +68,7 @@ class Pie(pl.LightningModule):
         embedding_out_dim = 2 * cemb_dim
         encoder_out_dim = 2 * hidden_size
         self._context_dim: int = encoder_out_dim
+
         if self.use_secondary_tasks_decision:
             self._context_dim += sum([
                 vocabulary.get_task_size(task.name)
@@ -303,8 +306,7 @@ class Pie(pl.LightningModule):
             self.log(
                 "train_" + task,
                 loss_dict[task],
-                batch_size=batch[0]["token__sequence__length"].shape[0],
-                prog_bar=True
+                batch_size=batch[0]["token__sequence__length"].shape[0]
             )
         return loss
 
@@ -318,7 +320,7 @@ class Pie(pl.LightningModule):
                 "val_" + task,
                 loss_dict[task],
                 batch_size=batch[0]["token__sequence__length"].shape[0],
-                prog_bar=True
+                prog_bar=True if "lm" not in task else False
             )
         # Batch = x, y
         for task in self.tasks.values():

@@ -1,8 +1,7 @@
 import os
 from torch.utils.data import DataLoader
 import pytorch_lightning as pl
-from pytorch_lightning.callbacks import TQDMProgressBar
-from pytorch_lightning.callbacks.early_stopping import EarlyStopping
+from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, TQDMProgressBar
 
 
 from tantal.models.pie import Pie
@@ -12,15 +11,29 @@ from tantal.data.tokens.train import parse_file
 from tantal.data.vocabulary import Vocabulary, Task
 from tokenizers import Tokenizer
 
-TOKENIZER_PATH = "./example-tokenizer.json"
+TOKENIZER_PATH = "saved_models/fro/example-tokenizer.json"
 TRAIN_FILE = "./exp_data/fro/train.tsv"
 DEV_FILE = "./exp_data/fro/dev.tsv"
+CHAR_LEVEL = False
 
 if not os.path.exists(TOKENIZER_PATH):
-    tokenizer = create_tokenizer("unigram", "NFKD", "Whitespace,Digits")
-    tokenizer_trainer = create_trainer("unigram", 2000, special_tokens=["[UNK]", "[PAD]", "[EOS]", "[BOS]"])
-    tokenizer.train_from_iterator(parse_file(TRAIN_FILE), trainer=tokenizer_trainer)
-    tokenizer.save(TOKENIZER_PATH)
+    if CHAR_LEVEL:
+        raise Exception
+        tokenizer = create_tokenizer("bpe", "NFKD", "Whitespace,Digits")
+        # train_for_bytes = train_for_bytes(
+        #       tokenizer,
+        #       parse_file(TRAIN_FILE),
+        #       trainer = tokenizer_trainer
+        #       special_tokens=["[UNK]", "[PAD]", "[EOS]", "[BOS]"]
+        #   )
+        tokenizer_trainer = create_trainer("bpe", 500, special_tokens=["[UNK]", "[PAD]", "[EOS]", "[BOS]"])
+        tokenizer.train_from_iterator(parse_file(TRAIN_FILE), trainer=tokenizer_trainer)
+        tokenizer.save(TOKENIZER_PATH)
+    else:
+        tokenizer = create_tokenizer("bpe", "NFKD", "Whitespace,Digits")
+        tokenizer_trainer = create_trainer("bpe", 500, special_tokens=["[UNK]", "[PAD]", "[EOS]", "[BOS]"])
+        tokenizer.train_from_iterator(parse_file(TRAIN_FILE), trainer=tokenizer_trainer)
+        tokenizer.save(TOKENIZER_PATH)
 else:
     tokenizer = Tokenizer.from_file(TOKENIZER_PATH)
 
@@ -59,7 +72,11 @@ trainer = pl.Trainer(
     gpus=1,
     max_epochs=100,
     gradient_clip_val=5,
-    callbacks=[TQDMProgressBar(), EarlyStopping(monitor="val_loss_main_task", patience=5, verbose=True)]
+    callbacks=[
+        TQDMProgressBar(),
+        EarlyStopping(monitor="val_loss_main_task", patience=5, verbose=True),
+        ModelCheckpoint(monitor="val_loss_main_task", save_top_k=2)
+    ]
 )
 trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=dev_loader)
 trainer.save_checkpoint("test.model")
