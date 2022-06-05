@@ -14,6 +14,7 @@ from tokenizers import Tokenizer
 TOKENIZER_PATH = "fro.json"
 TRAIN_FILE = "./exp_data/fro/train.tsv"
 DEV_FILE = "./exp_data/fro/dev.tsv"
+TEST_FILE = "./exp_data/fro/test.tsv"
 CHAR_LEVEL = True
 
 if not os.path.exists(TOKENIZER_PATH):
@@ -45,7 +46,7 @@ train_dataset = GroundTruthDataset(TRAIN_FILE, vocabulary=vocabulary)
 train_dataset.fit_vocab(max_lm_tokens=4000)
 vocabulary.to_file("vocabulary.json")
 
-#train_dataset.downscale(.01)
+train_dataset.downscale(.01)
 train_loader = DataLoader(
     train_dataset,
     collate_fn=train_dataset.collate_fn,
@@ -57,6 +58,13 @@ dev_dataset = GroundTruthDataset(DEV_FILE, vocabulary=vocabulary)
 #dev_dataset.downscale(.1)
 dev_loader = DataLoader(
     dev_dataset,
+    collate_fn=dev_dataset.collate_fn,
+    batch_size=64
+)
+test_dataset = GroundTruthDataset(TEST_FILE, vocabulary=vocabulary)
+#dev_dataset.downscale(.1)
+test_loader = DataLoader(
+    test_dataset,
     collate_fn=dev_dataset.collate_fn,
     batch_size=64
 )

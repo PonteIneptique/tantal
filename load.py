@@ -5,7 +5,7 @@ from tantal.tagger import PredictWrapper
 
 model = Pie.load_from_checkpoint(
     "test.model",
-    vocabulary=Vocabulary.from_file("vocabulary.json"),
+    vocabulary=Vocabulary.from_file("saved_models/fro2/vocabulary.json"),
     main_task="lemma",
     cemb_dim=300, cemb_layers=2, hidden_size=256, num_layers=1
 )

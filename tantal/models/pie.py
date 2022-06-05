@@ -1,4 +1,4 @@
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 from collections import namedtuple
 
 import torch
@@ -315,17 +315,7 @@ class Pie(pl.LightningModule):
 
     # def _compute_metrics(self, preds, secondary_task, ground_truth):
 
-    def validation_step(self, batch, batch_idx):
-        preds, loss, loss_dict, secondary_tasks = self.common_train_val_step(batch, batch_idx)
-        self.log("dev_loss", loss, batch_size=batch[0]["token__sequence__length"].shape[0])
-        for task in loss_dict:
-            self.log(
-                "val_" + task,
-                loss_dict[task],
-                batch_size=batch[0]["token__sequence__length"].shape[0],
-                prog_bar=True if "lm" not in task else False
-            )
-        # Batch = x, y
+    def compute_accuracy(self, preds, secondary_tasks, targets):
         for task in self.tasks.values():
             if task.name == "lm_token":
                 continue
@@ -335,9 +325,9 @@ class Pie(pl.LightningModule):
                 _, out = secondary_tasks[task.name]  # First is probability
 
             if task.categorical:
-                gt = batch[1]["categoricals"][task.name]
+                gt = targets["categoricals"][task.name]
             else:
-                gt = batch[1]["non_categoricals"][task.name].transpose(1, 0)  # [:, 1:]  # We remove the first dimension
+                gt = targets["non_categoricals"][task.name].transpose(1, 0)  # [:, 1:]  # We remove the first dimension
 
             attribute = getattr(self, f'acc_{task.name}')
             attribute(out.cpu(), gt.cpu())
@@ -356,18 +346,50 @@ class Pie(pl.LightningModule):
                 )
                 self.log(f'acc_{task.name}_token_level', attribute, on_epoch=True, prog_bar=True)
 
-        return loss, loss_dict
+    def validation_step(self, batch, batch_idx) -> Tuple[Dict[str, torch.Tensor], int]:
+        """
 
-    def validation_epoch_end(self, outputs=None) -> None:
-        loss, loss_dict = outputs[0]
-        for key in loss_dict:
+        :returns: Dictionary of losses per task and batch size
+        """
+        preds, loss, loss_dict, secondary_tasks = self.common_train_val_step(batch, batch_idx)
+        self.log("dev_loss", loss, batch_size=batch[0]["token__sequence__length"].shape[0])
+        for task in loss_dict:
+            self.log(
+                "val_" + task,
+                loss_dict[task],
+                batch_size=batch[0]["token__sequence__length"].shape[0],
+                prog_bar=True if "lm" not in task else False
+            )
+        # Batch = x, y
+        self.compute_accuracy(preds, secondary_tasks, batch[1])
+
+        return loss_dict, batch[0]["token__sequence__length"].shape[0]
+
+    def validation_epoch_end(self, outputs=None) -> Dict[str, torch.Tensor]:
+        if not isinstance(outputs, List):
+            outputs = [outputs]
+
+        nb_batch = sum([step[1] for step in outputs])
+
+        avg_loss = {
+            task: sum([step[0][task] for step in outputs]) / nb_batch
+            for task in outputs[0][0].keys()
+        }
+
+        for key in avg_loss:
             self_key = key[5:]
             _, self._weights[self_key] = self._watchers[self_key].update_steps_on_mode(
-                loss_dict[key],
+                avg_loss[key],
                 self._weights[self_key],
                 task=self_key
             )
-        return loss
+        return avg_loss
+
+    def test_step(self, batch, batch_idx):
+        preds, *_, secondary_tasks = self.common_train_val_step(batch, batch_idx)
+        self.compute_accuracy(preds, secondary_tasks, batch[1])
+
+    #def test_epoch_end(self, outputs: Union[EPOCH_OUTPUT, List[EPOCH_OUTPUT]]) -> None:
 
     # def validation_epoch_end(self, outputs=None) -> None:
     #    for task in self.accuracy:
