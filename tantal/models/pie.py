@@ -148,7 +148,7 @@ class Pie(pl.LightningModule):
             }
         }
         self._watchers: Dict[str, ScoreWatcher] = {
-            key: ScoreWatcher(10000)
+            key: ScoreWatcher(10000, main=key == "main_task")
             for key in self._weights
         }
 
