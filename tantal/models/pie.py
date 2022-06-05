@@ -1,4 +1,4 @@
-from typing import List, Dict
+from typing import List, Dict, Optional
 from collections import namedtuple
 
 import torch
@@ -37,8 +37,10 @@ class Pie(pl.LightningModule):
             cemb_layers: int,
             hidden_size: int,
             num_layers: int,
+            char_cell: Optional[str] = None,
             cell: str = 'LSTM',
             init_rnn: str = 'xavier_uniform',
+            lr: float = .001,
             # dropout
             dropout: float = .3,
             categorical: bool = False,
@@ -53,6 +55,8 @@ class Pie(pl.LightningModule):
         self.num_layers: int = num_layers
         # kwargs
         self.cell: str = cell
+        self.char_cell: str = char_cell or cell
+        self.lr: float = lr
         self.dropout: float = dropout
         self.cemb_layers: int = cemb_layers
         self.use_secondary_tasks_decision: bool = use_secondary_tasks_decision
@@ -80,7 +84,7 @@ class Pie(pl.LightningModule):
             vocab_size=self._vocabulary.tokenizer_size,
             cemb_dim=cemb_dim,
             padding_int=self._vocabulary.token_pad_index,
-            cell=cell,
+            cell=self.char_cell,
             dropout=dropout,
             num_layers=num_layers,
             init=init_rnn
@@ -113,7 +117,7 @@ class Pie(pl.LightningModule):
                 cemb_encoding_dim=embedding_out_dim,
                 context_dim=self._context_dim,  # Bi-directional
                 num_layers=cemb_layers,
-                cell_type=cell,
+                cell_type=self.cell,
                 dropout=dropout,
                 init_rnn=init_rnn
             )
@@ -124,11 +128,10 @@ class Pie(pl.LightningModule):
                 padding_index=vocabulary.categorical_pad_token_index
             )
 
-        self.lm_fwd_decoder = LinearDecoder(
+        self.lm = LinearDecoder(
             vocab_size=vocabulary.get_task_size("lm_token"),
             in_features=hidden_size,
             padding_index=vocabulary.categorical_pad_token_index)
-        self.lm_bwd_decoder = self.lm_fwd_decoder
 
         # nll weight
         nll_weight = torch.ones(vocabulary.get_task_size("lm_token"))
@@ -264,7 +267,7 @@ class Pie(pl.LightningModule):
             #   1. Use grouped subwords ? But wouldn't that be weird in terms of efficiency ? #
             #          Not even sure it's possible (same problem ?)
             #   2. Use RNN and predict flat_subwords. Need to share everything though.
-            lm_fwd = self.lm_fwd_decoder(pad(fwd[:-1], pos='pre'))
+            lm_fwd = self.lm(pad(fwd[:-1], pos='pre'))
             losses["loss_lm_fwd"] = F.cross_entropy(
                 lm_fwd.view(-1, self._vocabulary.get_task_size("lm_token")),
                 gt["categoricals"]["lm_token"].view(-1),
@@ -273,7 +276,7 @@ class Pie(pl.LightningModule):
                 ignore_index=self._vocabulary.categorical_pad_token_index
             )
             # Same but previous token is the target
-            lm_bwd = self.lm_bwd_decoder(pad(bwd[1:], pos='post'))
+            lm_bwd = self.lm(pad(bwd[1:], pos='post'))
             losses["loss_lm_bwd"] = F.cross_entropy(
                 lm_bwd.view(-1, self._vocabulary.get_task_size("lm_token")),
                 gt["categoricals"]["lm_token"].view(-1),
@@ -371,13 +374,14 @@ class Pie(pl.LightningModule):
     #        self.log(f'{task}_acc', self.accuracy[task])
 
     def configure_optimizers(self):
-        optimizer = Ranger(self.parameters(), lr=1e-3)
+        optimizer = Ranger(self.parameters(), lr=self.lr)
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(
             optimizer,
-            mode="min",
+            mode="max",
+            threshold=1e-3,
             verbose=False,
             factor=.6,
-            patience=11,
+            patience=2,
             min_lr=1e-6
         )
         return (
@@ -386,7 +390,7 @@ class Pie(pl.LightningModule):
                 {
                     "scheduler": scheduler,
                     "interval": "epoch",
-                    "monitor": "val_loss_main_task",
+                    "monitor": "acc_lemma_token_level",
                     "frequency": 1
                 }
             ]

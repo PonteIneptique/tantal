@@ -42,14 +42,15 @@ vocabulary = Vocabulary(
     ]
 )
 train_dataset = GroundTruthDataset(TRAIN_FILE, vocabulary=vocabulary)
-train_dataset.fit_vocab(max_lm_tokens=3000)
+train_dataset.fit_vocab(max_lm_tokens=4000)
 vocabulary.to_file("vocabulary.json")
 
 #train_dataset.downscale(.01)
 train_loader = DataLoader(
     train_dataset,
     collate_fn=train_dataset.collate_fn,
-    batch_size=64
+    batch_size=64,
+    shuffle=True
 )
 
 dev_dataset = GroundTruthDataset(DEV_FILE, vocabulary=vocabulary)
@@ -62,7 +63,9 @@ dev_loader = DataLoader(
 model = Pie(
     vocabulary,
     main_task="lemma",
-    cemb_dim=300, cemb_layers=2, hidden_size=256, num_layers=1
+    cemb_dim=300, cemb_layers=2, hidden_size=150, num_layers=1,
+    dropout=.3, cell="LSTM", char_cell="RNN", lr=0.0049,
+    use_secondary_tasks_decision=True
 )
 trainer = pl.Trainer(
     gpus=1,
@@ -70,9 +73,9 @@ trainer = pl.Trainer(
     gradient_clip_val=5,
     callbacks=[
         TQDMProgressBar(),
-        EarlyStopping(monitor="val_loss_main_task", patience=5, verbose=True),
-        ModelCheckpoint(monitor="val_loss_main_task", save_top_k=2)
+        EarlyStopping(monitor="acc_lemma_token_level", patience=5, verbose=True, mode="max"),
+        ModelCheckpoint(monitor="acc_lemma_token_level", save_top_k=2, mode="max")
     ]
 )
 trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=dev_loader)
-trainer.save_checkpoint("test.model")
+trainer.save_checkpoint("FroWithUse.model")

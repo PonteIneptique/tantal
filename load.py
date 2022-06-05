@@ -7,15 +7,16 @@ model = Pie.load_from_checkpoint(
     "test.model",
     vocabulary=Vocabulary.from_file("vocabulary.json"),
     main_task="lemma",
-    cemb_dim=200, cemb_layers=2, hidden_size=256, num_layers=1
+    cemb_dim=300, cemb_layers=2, hidden_size=256, num_layers=1
 )
 
 
-tokens = [
-    "Ira enim in uindictam malorum sequi debet rationem animi non preire ut quasi ancilla iustitie"
-    " post tergum ueniat et non lasciua ante faciem prorumpat".split(),
-    ['Quid', 'faciat', 'uolt', 'scire', 'Lyris', 'quod', 'sobria', 'fellat']
-]
+
+#tokens = [
+#    "Ira enim in uindictam malorum sequi debet rationem animi non preire ut quasi ancilla iustitie"
+#    " post tergum ueniat et non lasciua ante faciem prorumpat".split(),
+#    ['Quid', 'faciat', 'uolt', 'scire', 'Lyris', 'quod', 'sobria', 'fellat']
+#]
 tokens = ["""Philippe de Thaün
 Ad fait une raisun
 Pur pruveires guarnir
@@ -27,8 +28,8 @@ Ne en fait ne en escrit
 A Unfrei de Thaün,
 Le chapelein Yhun
 E seneschal lu rei.""", """Icho vus di par mei."""]
-tokens = ["Quel part que Bos irra irrunt.", "Quant Bos ot od sei ces qu'il volt, E espié e veü ot Liquels Petreïus esteit Ki tuz les altres mainteneit"]
-tokens = [sent.split() for sent in tokens]
+tokens = tokens + ["Quel part que Bos irra irrunt", "Quant Bos ot od sei ces qu'il volt E espié e veü ot Liquels Petreïus esteit Ki tuz les altres mainteneit"]
+tokens = [[sent.split() for sent in tokens][-1]]
 
 print(tokens)
 predict = PredictWrapper(model)
