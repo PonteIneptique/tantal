@@ -11,7 +11,7 @@ from tantal.data.tokens.train import parse_file
 from tantal.data.vocabulary import Vocabulary, Task
 from tokenizers import Tokenizer
 
-TOKENIZER_PATH = "fro.json"
+TOKENIZER_PATH = "fro3.json"
 TRAIN_FILE = "./exp_data/fro/train.tsv"
 DEV_FILE = "./exp_data/fro/dev.tsv"
 TEST_FILE = "./exp_data/fro/test.tsv"
@@ -43,14 +43,14 @@ vocabulary = Vocabulary(
     ]
 )
 train_dataset = GroundTruthDataset(TRAIN_FILE, vocabulary=vocabulary)
-train_dataset.fit_vocab(max_lm_tokens=4000)
+train_dataset.fit_vocab(max_lm_tokens=10000)
 vocabulary.to_file("vocabulary.json")
 
-train_dataset.downscale(.01)
+#train_dataset.downscale(.01)
 train_loader = DataLoader(
     train_dataset,
     collate_fn=train_dataset.collate_fn,
-    batch_size=64,
+    batch_size=100,
     shuffle=True
 )
 
@@ -68,22 +68,46 @@ test_loader = DataLoader(
     collate_fn=dev_dataset.collate_fn,
     batch_size=64
 )
-model = Pie(
-    vocabulary,
-    main_task="lemma",
-    cemb_dim=300, cemb_layers=2, hidden_size=150, num_layers=1,
-    dropout=.3, cell="LSTM", char_cell="RNN", lr=0.0049,
-    use_secondary_tasks_decision=True
-)
-trainer = pl.Trainer(
-    gpus=1,
-    max_epochs=100,
-    gradient_clip_val=5,
-    callbacks=[
-        TQDMProgressBar(),
-        EarlyStopping(monitor="acc_lemma_token_level", patience=5, verbose=True, mode="max"),
-        ModelCheckpoint(monitor="acc_lemma_token_level", save_top_k=2, mode="max")
-    ]
-)
-trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=dev_loader)
-trainer.save_checkpoint("FroWithUse.model")
+
+for i in range(5):
+    model = Pie(
+        vocabulary,
+        main_task="lemma",
+        cemb_dim=300, cemb_layers=2, hidden_size=150, num_layers=1,
+        dropout=.3, cell="LSTM", char_cell="RNN", lr=0.0049,
+        use_secondary_tasks_decision=True
+    )
+    trainer = pl.Trainer(
+        gpus=1,
+        max_epochs=100,
+        gradient_clip_val=5,
+        callbacks=[
+            TQDMProgressBar(),
+            EarlyStopping(monitor="acc_lemma_token_level", patience=5, verbose=True, mode="max"),
+            ModelCheckpoint(monitor="acc_lemma_token_level", save_top_k=2, mode="max")
+        ]
+    )
+    trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=dev_loader)
+    trainer.save_checkpoint(f"FroWithUse{i}.model")
+    trainer.test(dataloaders=test_loader, model=model)
+
+    model = Pie(
+        vocabulary,
+        main_task="lemma",
+        cemb_dim=300, cemb_layers=2, hidden_size=150, num_layers=1,
+        dropout=.3, cell="LSTM", char_cell="RNN", lr=0.0049,
+        use_secondary_tasks_decision=False
+    )
+    trainer = pl.Trainer(
+        gpus=1,
+        max_epochs=100,
+        gradient_clip_val=5,
+        callbacks=[
+            TQDMProgressBar(),
+            EarlyStopping(monitor="acc_lemma_token_level", patience=5, verbose=True, mode="max"),
+            ModelCheckpoint(monitor="acc_lemma_token_level", save_top_k=2, mode="max")
+        ]
+    )
+    trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=dev_loader)
+    trainer.save_checkpoint(f"FroWithoutUse{i}.model")
+    trainer.test(dataloaders=test_loader, model=model)

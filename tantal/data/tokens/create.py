@@ -1,6 +1,8 @@
 import tokenizers
 from tokenizers import Tokenizer, models, normalizers, pre_tokenizers, decoders, trainers, ByteLevelBPETokenizer
 from typing import Dict, Type, Optional, List, Union
+from unicodedata import normalize
+
 
 AvailableModels: Dict[str, Type[models.Model]] = {
     "unigram": models.Unigram,
@@ -102,24 +104,29 @@ def create_tokenizer(
 def train_for_bytes(
     iterator_fn,
     iterator_args,
-    normalization: Optional[str] = None,
-    special_tokens: List[str] = None
+    special_tokens: List[str] = None,
+    canonical: bool = True
 ) -> Tokenizer:
-    tokenizer = ByteLevelBPETokenizer(add_prefix_space=False, unicode_normalizer="nfd")
+    #tokenizer = ByteLevelBPETokenizer(vocab=[], add_prefix_space=False, unicode_normalizer="nfkd")
     chars = set()
+    normalize_mode = "NFD"
+    if canonical:
+        normalize_mode = "NFKD"
     for sentence in iterator_fn(*iterator_args):
-        chars = chars.union(set(tokenizer.normalizer.normalize_str(sentence+sentence.upper())))
-    chars = sorted(list(chars))
+        chars = chars.union(set(normalize(normalize_mode, sentence+sentence.upper())))
 
-    def parser(normalizer):
-        for sentence in iterator_fn(*iterator_args):
-            yield normalizer(sentence)
-            yield normalizer(sentence.upper())
+    chars = sorted(list("".join(list(chars)).strip()))
 
-    tokenizer.train_from_iterator(
-        parser(normalizer=tokenizer.normalizer.normalize_str),
-        vocab_size=len(chars), show_progress=True, special_tokens=special_tokens
+    tokenizer = ByteLevelBPETokenizer(
+        vocab={
+            char: idx
+            for idx, char in enumerate(special_tokens+chars)
+        },
+        merges=[],
+        add_prefix_space=False,
+        unicode_normalizer=normalize_mode.lower()
     )
+    tokenizer.model.unk_token = "[UNK]"
     return tokenizer
 
 

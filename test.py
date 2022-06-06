@@ -26,7 +26,7 @@ test_loader = DataLoader(
     batch_size=64
 )
 model = Pie.load_from_checkpoint(
-    "./saved_models/fro2/FroWithUse.model",
+    "lightning_logs/version_60/checkpoints/epoch=62-step=23688.ckpt",
     vocabulary=Vocabulary.from_file("saved_models/fro2/vocabulary.json"),
     main_task="lemma",
     cemb_dim=300, cemb_layers=2, hidden_size=150, num_layers=1,

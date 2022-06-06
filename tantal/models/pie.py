@@ -133,11 +133,6 @@ class Pie(pl.LightningModule):
             in_features=hidden_size,
             padding_index=vocabulary.categorical_pad_token_index)
 
-        # nll weight
-        nll_weight = torch.ones(vocabulary.get_task_size("lm_token"))
-        nll_weight[vocabulary.categorical_pad_token_index] = 0.
-        self.register_buffer('lm_nll_weight', nll_weight)
-
         self._weights = {
             "main_task": 1.0,
             "lm_fwd": .2,
@@ -243,12 +238,14 @@ class Pie(pl.LightningModule):
             "loss_main_task": F.cross_entropy(
                 input=loss_matrix_probs.view(-1, loss_matrix_probs.shape[-1]),
                 target=self.get_main_task_gt(gt).view(-1),
+                weight=self.decoder.nll_weight, reduction="mean",
                 ignore_index=self._vocabulary.token_pad_index
             ),
             **{
                 f"loss_{task}": F.cross_entropy(
                     input=secondary_tasks[task].view(-1, secondary_tasks[task].shape[-1]),
                     target=gt["categoricals"][task].view(-1),
+                    weight=self.linear_secondary_tasks[task].nll_weight, reduction="mean",
                     ignore_index=self._vocabulary.token_pad_index
                 )
                 for task in gt["categoricals"]  # Quickfix as LEMMA is main task now
@@ -267,20 +264,18 @@ class Pie(pl.LightningModule):
             #   1. Use grouped subwords ? But wouldn't that be weird in terms of efficiency ? #
             #          Not even sure it's possible (same problem ?)
             #   2. Use RNN and predict flat_subwords. Need to share everything though.
-            lm_fwd = self.lm(pad(fwd[:-1], pos='pre'))
             losses["loss_lm_fwd"] = F.cross_entropy(
-                lm_fwd.view(-1, self._vocabulary.get_task_size("lm_token")),
+                self.lm(pad(fwd[:-1], pos='pre')).view(-1, self._vocabulary.get_task_size("lm_token")),
                 gt["categoricals"]["lm_token"].view(-1),
-                weight=self.lm_nll_weight,
+                weight=self.lm.nll_weight,
                 reduction="mean",
                 ignore_index=self._vocabulary.categorical_pad_token_index
             )
             # Same but previous token is the target
-            lm_bwd = self.lm(pad(bwd[1:], pos='post'))
             losses["loss_lm_bwd"] = F.cross_entropy(
-                lm_bwd.view(-1, self._vocabulary.get_task_size("lm_token")),
+                self.lm(pad(bwd[1:], pos='post')).view(-1, self._vocabulary.get_task_size("lm_token")),
                 gt["categoricals"]["lm_token"].view(-1),
-                weight=self.lm_nll_weight,
+                weight=self.lm.nll_weight,
                 reduction="mean",
                 ignore_index=self._vocabulary.categorical_pad_token_index
             )
