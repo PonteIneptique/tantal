@@ -12,7 +12,7 @@ class ScoreWatcher:
     patience: int = 5
     delta: float = 0.05
     factor: float = 0.6
-    min_weight: float = .2
+    min_weight: float = .05
     main: bool = False
 
     def update_steps_on_mode(self, score, weight: float, task: str):
@@ -26,7 +26,7 @@ class ScoreWatcher:
             if self.steps > self.patience:
                 weight = self.factor * weight
                 if weight < self.min_weight:
-                    weight = weight
+                    weight = self.min_weight
                     print(f"Minimal weight reached")
                 else:
                     print(f"Weights have been updated for task `{task}` (Score: `{self.score}`, Weight: `{weight}` )")

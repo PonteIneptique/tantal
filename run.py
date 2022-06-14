@@ -49,7 +49,7 @@ vocabulary.to_file("vocabulary.json")
 train_loader = DataLoader(
     train_dataset,
     collate_fn=train_dataset.collate_fn,
-    batch_size=100,
+    batch_size=64,
     shuffle=True
 )
 
@@ -82,12 +82,13 @@ for i in range(5):
         gradient_clip_val=5,
         callbacks=[
             TQDMProgressBar(),
-            EarlyStopping(monitor="acc_lemma_token_level", patience=5, verbose=True, mode="max"),
-            ModelCheckpoint(monitor="acc_lemma_token_level", save_top_k=2, mode="max")
+            EarlyStopping(monitor="acc_lemma", patience=5, verbose=True, mode="max"),
+            ModelCheckpoint(monitor="acc_lemma", save_top_k=2, mode="max")
         ]
     )
     trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=dev_loader)
     trainer.save_checkpoint(f"FroWithUse{i}.model")
+    break
     trainer.test(dataloaders=test_loader, model=model)
 
     model = Pie(
@@ -103,8 +104,8 @@ for i in range(5):
         gradient_clip_val=5,
         callbacks=[
             TQDMProgressBar(),
-            EarlyStopping(monitor="acc_lemma_token_level", patience=5, verbose=True, mode="max"),
-            ModelCheckpoint(monitor="acc_lemma_token_level", save_top_k=2, mode="max")
+            EarlyStopping(monitor="acc_lemma", patience=5, verbose=True, mode="max"),
+            ModelCheckpoint(monitor="acc_lemma", save_top_k=2, mode="max")
         ]
     )
     trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=dev_loader)

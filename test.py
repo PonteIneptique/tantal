@@ -17,20 +17,20 @@ DEV_FILE = "./exp_data/fro/dev.tsv"
 TEST_FILE = "./exp_data/fro/test.tsv"
 CHAR_LEVEL = True
 
-vocabulary = Vocabulary.from_file("./saved_models/fro2/vocabulary.json")
+#vocabulary = Vocabulary.from_file("./saved_models/fro2/vocabulary.json")
 
-test_dataset = GroundTruthDataset(TEST_FILE, vocabulary=vocabulary)
+model = Pie.load_from_checkpoint(
+    "saved_models/fro/with_use/epoch=41-step=15792.ckpt",
+    hparams_file="saved_models/fro/with_use/hparams.yaml",
+    vocabulary=Vocabulary.from_file("saved_models/fro/with_use/vocabulary.json")
+)
+model.freeze()
+test_dataset = GroundTruthDataset(TEST_FILE, vocabulary=model._vocabulary)
 test_loader = DataLoader(
     test_dataset,
     collate_fn=test_dataset.collate_fn,
     batch_size=64
 )
-model = Pie.load_from_checkpoint(
-    "lightning_logs/version_60/checkpoints/epoch=62-step=23688.ckpt",
-    vocabulary=Vocabulary.from_file("saved_models/fro2/vocabulary.json")
-
-)
-
 
 trainer = pl.Trainer(
     gpus=1,
@@ -38,8 +38,8 @@ trainer = pl.Trainer(
     gradient_clip_val=5,
     callbacks=[
         TQDMProgressBar(),
-        EarlyStopping(monitor="acc_lemma_token_level", patience=5, verbose=True, mode="max"),
-        ModelCheckpoint(monitor="acc_lemma_token_level", save_top_k=2, mode="max")
+        EarlyStopping(monitor="acc_lemma", patience=5, verbose=True, mode="max"),
+        ModelCheckpoint(monitor="acc_lemma", save_top_k=2, mode="max")
     ]
 )
 print(trainer.test(model, dataloaders=test_loader))
