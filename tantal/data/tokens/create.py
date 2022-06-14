@@ -126,6 +126,7 @@ def train_for_bytes(
         add_prefix_space=False,
         unicode_normalizer=normalize_mode.lower()
     )
+    tokenizer.add_special_tokens(special_tokens)
     tokenizer.model.unk_token = "[UNK]"
     return tokenizer
 
