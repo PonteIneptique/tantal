@@ -27,11 +27,8 @@ test_loader = DataLoader(
 )
 model = Pie.load_from_checkpoint(
     "lightning_logs/version_60/checkpoints/epoch=62-step=23688.ckpt",
-    vocabulary=Vocabulary.from_file("saved_models/fro2/vocabulary.json"),
-    main_task="lemma",
-    cemb_dim=300, cemb_layers=2, hidden_size=150, num_layers=1,
-    dropout=.3, cell="LSTM", char_cell="RNN", lr=0.0049,
-    use_secondary_tasks_decision=True
+    vocabulary=Vocabulary.from_file("saved_models/fro2/vocabulary.json")
+
 )
 
 
