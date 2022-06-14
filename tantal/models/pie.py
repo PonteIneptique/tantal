@@ -1,4 +1,4 @@
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Union, IO, Callable
 from collections import namedtuple
 
 import torch
@@ -47,7 +47,7 @@ class Pie(pl.LightningModule):
             use_secondary_tasks_decision: bool = True
     ):
         super(Pie, self).__init__()
-        self.save_hyperparameters()
+        self.save_hyperparameters(ignore=["vocabulary"])
 
         # args
         self.cemb_dim: int = cemb_dim
@@ -371,6 +371,8 @@ class Pie(pl.LightningModule):
             for task in outputs[0][0].keys()
         }
 
+        print(avg_loss)
+
         for key in avg_loss:
             self_key = key[5:]
             _, self._weights[self_key] = self._watchers[self_key].update_steps_on_mode(
@@ -378,6 +380,11 @@ class Pie(pl.LightningModule):
                 self._weights[self_key],
                 task=self_key
             )
+
+        print()
+        for task in self._watchers:
+            print(self._watchers[task].repr(task, self._weights[task]))
+
         return avg_loss
 
     def test_step(self, batch, batch_idx):

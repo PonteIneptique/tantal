@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Union
+from typing import Union, Dict
 from torch import Tensor
 
 
@@ -32,3 +32,7 @@ class ScoreWatcher:
                     print(f"Weights have been updated for task `{task}` (Score: `{self.score}`, Weight: `{weight}` )")
                 self.steps = 0
         return self.steps, weight
+
+    def repr(self, task_name: str, weight: float):
+        return f'<ScoreWatcher task="{task_name}" weight="{weight:.2f}" ' \
+               f'best="{self.score:.2f}" mode="{self.mode}" />'
