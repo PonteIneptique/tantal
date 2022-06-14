@@ -17,7 +17,6 @@ from tantal.utils import ScoreWatcher
 from tantal.modules.pie.utils import flatten_padded_batch, pad
 from ranger import Ranger
 
-
 Score = namedtuple("Score", ["score", "steps"])
 
 
@@ -222,7 +221,7 @@ class Pie(pl.LightningModule):
             encoded_sentences: torch.Tensor,
             tokens_length: torch.Tensor,
             max_seq_len: int = 20
-        ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         # get_context(outs, wemb, wlen, self.tasks[task]['context'])
         if isinstance(self.decoder, AttentionalDecoder):
             # cemb_outs = F.dropout(cemb_outs, p=self.dropout, training=self.training)
@@ -244,10 +243,10 @@ class Pie(pl.LightningModule):
         return hyps, scores
 
     def _compute_lm(
-        self,
-        encoded_sentences: torch.Tensor,
-        gt: torch.Tensor,
-        batch_size: int
+            self,
+            encoded_sentences: torch.Tensor,
+            gt: torch.Tensor,
+            batch_size: int
     ):
         if batch_size == 1:
             return {"loss_lm_bwd": 0, "loss_lm_fwd": 0}
@@ -328,7 +327,7 @@ class Pie(pl.LightningModule):
 
         if isinstance(self.decoder, AttentionalDecoder):
             gt_tokens, gt_tokens_length = gt["non_categoricals"][self.main_task], \
-                                          gt["non_categoricals"][self.main_task+"__length"]
+                                          gt["non_categoricals"][self.main_task + "__length"]
             main_loss = self.decoder.loss(
                 ground_truth=gt_tokens,
                 ground_truth_lengths=gt_tokens_length,
@@ -361,49 +360,6 @@ class Pie(pl.LightningModule):
 
         return loss
 
-    def compute_accuracy(self, preds, secondary_tasks, targets):
-        preds = pad_sequence(
-            [torch.tensor(pred, device="cpu") for pred in preds],
-            padding_value=self._vocabulary.token_pad_index,
-            batch_first=True
-        )
-        for task in self.tasks.values():
-            if task.name == "lm_token":
-                continue
-
-            if task.categorical:
-                gt = targets["categoricals"][task.name]
-            else:
-                gt = targets["non_categoricals"][task.name].transpose(1, 0)  # [:, 1:]  # We remove the first dimension
-
-            if task.name == self.main_task:
-                out = preds
-                # If the length of the targets was not reached, create an empty tensor of the size of gt and add preds
-                if not task.categorical and preds.shape[1] < gt.shape[1]:
-                    out = torch.full(gt.shape, self._vocabulary.token_eos_index)
-                    out[:, :preds.shape[1]] = preds  # Replace value with pad value
-
-            else:
-                _, out = secondary_tasks[task.name]  # First is probability
-                out = out.cpu()
-
-            attribute = getattr(self, f'acc_{task.name}')
-            attribute(out, gt.cpu())
-            self.log(f'acc_{task.name}', attribute, on_epoch=True, prog_bar=True)
-
-            if task.name == self.main_task and not task.categorical:
-                # For non-categorical, specifically for lemma, let's make sure this computes the token level
-                #   accuracy
-                attribute = getattr(self, f'acc_{task.name}_token_level')
-                out, gt = self._vocabulary.tokenizer.decode_batch(out.tolist()), \
-                          self._vocabulary.tokenizer.decode_batch(gt.cpu().tolist())
-                local_encoder = list(set(out + gt))
-                attribute(
-                    torch.tensor([local_encoder.index(val) for val in out]),
-                    torch.tensor([local_encoder.index(val) for val in gt]),
-                )
-                self.log(f'acc_{task.name}_token_level', attribute, on_epoch=True, prog_bar=True)
-
     def validation_step(self, batch, batch_idx) -> Tuple[Dict[str, torch.Tensor], int]:
         """
 
@@ -420,7 +376,7 @@ class Pie(pl.LightningModule):
 
         if isinstance(self.decoder, AttentionalDecoder):
             gt_tokens, gt_tokens_length = gt["non_categoricals"][self.main_task], \
-                                          gt["non_categoricals"][self.main_task+"__length"]
+                                          gt["non_categoricals"][self.main_task + "__length"]
             main_loss = self.decoder.loss(
                 ground_truth=gt_tokens,
                 ground_truth_lengths=gt_tokens_length,
@@ -455,7 +411,7 @@ class Pie(pl.LightningModule):
 
         self.compute_accuracy(hyps, self._softmax_secondary_tasks(secondary_tasks), gt)
 
-        return losses, batch_size
+        return {**losses, **secondary_losses}, batch_size
 
     def validation_epoch_end(self, outputs=None) -> Dict[str, torch.Tensor]:
         if not isinstance(outputs, List):
@@ -482,9 +438,53 @@ class Pie(pl.LightningModule):
 
         return avg_loss
 
+    def compute_accuracy(self, preds, secondary_tasks, targets):
+        preds = pad_sequence(
+            [torch.tensor(pred, device="cpu") for pred in preds],
+            padding_value=self._vocabulary.token_pad_index,
+            batch_first=True
+        )
+        for task in self.tasks.values():
+            if task.name == "lm_token":
+                continue
+
+            if task.categorical:
+                gt = targets["categoricals"][task.name].cpu()
+            else:
+                gt = targets["non_categoricals"][task.name].transpose(1, 0).cpu()
+
+            if task.name == self.main_task:
+                out = preds.cpu()
+                # If the length of the targets was not reached, create an empty tensor of the size of gt and add preds
+                if not task.categorical and preds.shape[1] < gt.shape[1]:
+                    out = torch.full(gt.shape, self._vocabulary.token_pad_index, device="cpu")
+                    out[:, :preds.shape[1]] = preds  # Replace value with pad value
+            # If we have a a non main task
+            else:
+                _, out = secondary_tasks[task.name]  # First is probability
+                out = out.cpu()
+
+            attribute = getattr(self, f'acc_{task.name}')
+            attribute(out, gt.cpu())
+            self.log(f'acc_{task.name}', attribute, on_epoch=True, prog_bar=True)
+
+            if task.name == self.main_task and not task.categorical:
+                # For non-categorical, specifically for lemma, let's make sure this computes the token level
+                #   accuracy
+                attribute = getattr(self, f'acc_{task.name}_token_level')
+                out, gt = self._vocabulary.tokenizer.decode_batch(out.tolist()), \
+                          self._vocabulary.tokenizer.decode_batch(gt.tolist())
+                print(list(zip(out, gt)))
+                local_encoder = list(set(out + gt))
+                attribute(
+                    torch.tensor([local_encoder.index(val) for val in out], device="cpu"),
+                    torch.tensor([local_encoder.index(val) for val in gt], device="cpu"),
+                )
+                self.log(f'acc_{task.name}_token_level', attribute, on_epoch=True, prog_bar=True)
+
     def test_step(self, batch, batch_idx):
-        #preds, *_, secondary_tasks = self.common_train_val_step(batch)
-        #self.compute_accuracy(preds, secondary_tasks, batch[1])
+        # preds, *_, secondary_tasks = self.common_train_val_step(batch)
+        # self.compute_accuracy(preds, secondary_tasks, batch[1])
         return
 
     def configure_optimizers(self):

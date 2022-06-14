@@ -20,7 +20,6 @@ CHAR_LEVEL = True
 if not os.path.exists(TOKENIZER_PATH):
     if CHAR_LEVEL:
         tokenizer = train_for_bytes(
-            normalization="NFD",
             iterator_fn=parse_file,
             iterator_args=(TRAIN_FILE, ),
             special_tokens=["[UNK]", "[PAD]", "[EOS]", "[BOS]"]
