@@ -5,6 +5,7 @@ import torch
 from torch import optim
 from torch import nn
 from torch.nn import functional as F
+from torch.nn.utils.rnn import pad_sequence
 
 import pytorch_lightning as pl
 import torchmetrics
@@ -68,7 +69,7 @@ class Pie(pl.LightningModule):
         self.tasks: Dict[str, Task] = self._vocabulary.tasks
         self.main_task: str = main_task
 
-        # Bidirectional so embedding_encoder_out = 2*cemb_dim
+        # Bidirectional so embedding_encoder_out = 2 * cemb_dim
         embedding_out_dim = 2 * cemb_dim
         encoder_out_dim = 2 * hidden_size
         self._context_dim: int = encoder_out_dim
@@ -143,7 +144,7 @@ class Pie(pl.LightningModule):
             }
         }
         self._watchers: Dict[str, ScoreWatcher] = {
-            key: ScoreWatcher(10000, main=key == "main_task")
+            key: ScoreWatcher(float('inf'), main=key == "main_task")
             for key in self._weights
         }
 
@@ -163,17 +164,17 @@ class Pie(pl.LightningModule):
         else:
             return gt["non_categoricals"][self.main_task]
 
-    def proj(
+    def _encode(
             self,
             tokens: torch.Tensor,
             tokens_length: torch.Tensor,
-            sequence_length: torch.Tensor,
-            train_or_eval: bool = False,
-            max_seq_len: int = 20
-    ):
+            sequence_length: torch.Tensor
+    ) -> Tuple[torch.Tensor, List[torch.Tensor], Dict[str, torch.Tensor]]:
         """
 
         :param tokens: Unrolled tokens (each token is one dim, outside of any sentence question)
+
+        :returns: Encoded words, encoded sentences (Context), Secondary tasks projection (no max applied)
         """
         # tensor(length, batch_size)
         # tensor(length, batch_size * words)
@@ -193,146 +194,208 @@ class Pie(pl.LightningModule):
             for task, module in self.linear_secondary_tasks.items()
         }
 
+        return encoded_words, encoded_sentences, secondary_tasks
+
+    def _compute_context(
+            self,
+            encoded_sentences: torch.Tensor,
+            sequence_length: torch.Tensor,
+            secondary_tasks: Dict[str, torch.Tensor],
+    ):
+        if self.use_secondary_tasks_decision:
+            return flatten_padded_batch(
+                torch.cat([
+                    encoded_sentences,
+                    *secondary_tasks.values()
+                ], dim=-1),
+                sequence_length
+            )
+        else:
+            return flatten_padded_batch(
+                encoded_sentences,
+                sequence_length
+            )
+
+    def _decode(
+            self,
+            encoded_words: torch.Tensor,
+            encoded_sentences: torch.Tensor,
+            tokens_length: torch.Tensor,
+            max_seq_len: int = 20
+        ) -> Tuple[torch.Tensor, torch.Tensor]:
         # get_context(outs, wemb, wlen, self.tasks[task]['context'])
         if isinstance(self.decoder, AttentionalDecoder):
             # cemb_outs = F.dropout(cemb_outs, p=self.dropout, training=self.training)
             # context: torch.Size([Batch Size * Max Length, 2 * Hidden Size]) <--- PROBLEM
-            if self.use_secondary_tasks_decision:
-                single_encoded_sentence = flatten_padded_batch(
-                    torch.cat([
-                        encoded_sentences[-1],
-                        *secondary_tasks.values()
-                    ], dim=-1),
-                    sequence_length
-                )
-            else:
-                single_encoded_sentence = flatten_padded_batch(
-                    encoded_sentences[-1],
-                    sequence_length
-                )
+            # single_encoded_sentence = self._compute_context(encoded_sentences, sequence_length, secondary_tasks)
             # Use last layer enc_outs[-1]
-            logits = self.decoder(encoded_words=encoded_words, lengths=tokens_length,
-                                  encoded_sentence=single_encoded_sentence, train_or_eval=train_or_eval,
-                                  max_seq_len=max_seq_len)
+            hyps, scores = self.decoder(
+                encoded_words=encoded_words,
+                lengths=tokens_length,
+                encoded_sentence=encoded_sentences,
+                max_seq_len=max_seq_len
+            )
         else:
             logits = self.decoder(encoded=encoded_sentences)
+            hyps = logits
+            scores = 0
+            # ToDo: Transform into hypothesis with probs ?
 
-        return logits, emb, encoded_sentences, secondary_tasks
+        return hyps, scores
 
-    def common_train_val_step(self, batch, batch_idx):
-        x, gt = batch
-        tokens, tokens_length, sequence_length = x["token"], x["token__length"], x["token__sequence__length"]
+    def _compute_lm(
+        self,
+        encoded_sentences: torch.Tensor,
+        gt: torch.Tensor,
+        batch_size: int
+    ):
+        if batch_size == 1:
+            return {"loss_lm_bwd": 0, "loss_lm_fwd": 0}
+        losses = {}
+        # Divide the two direction of enc_outs[0]
+        fwd, bwd = encoded_sentences.chunk(2, dim=2)
 
-        assert sum(sequence_length).item() == tokens.shape[1], "Number of words accross sentence should match " \
-                                                               "unrolled tokens"
-
-        (loss_matrix_probs, preds), emb, enc_outs, secondary_tasks = self.proj(
-            tokens, tokens_length, sequence_length,
-            train_or_eval=True,
-            max_seq_len=self.get_main_task_gt(gt).shape[0]
+        # Remove the first last token and try to predict each next token (WordLevel)
+        # Issue: we are not at the word level
+        # Solution:
+        #   1. Use grouped subwords ? But wouldn't that be weird in terms of efficiency ? #
+        #          Not even sure it's possible (same problem ?)
+        #   2. Use RNN and predict flat_subwords. Need to share everything though.
+        losses["loss_lm_fwd"] = F.cross_entropy(
+            self.lm(pad(fwd[:-1], pos='pre')).view(-1, self._vocabulary.get_task_size("lm_token")),
+            gt.view(-1),
+            weight=self.lm.nll_weight,
+            reduction="mean",
+            ignore_index=self._vocabulary.categorical_pad_token_index
         )
+        # Same but previous token is the target
+        losses["loss_lm_bwd"] = F.cross_entropy(
+            self.lm(pad(bwd[1:], pos='post')).view(-1, self._vocabulary.get_task_size("lm_token")),
+            gt.view(-1),
+            weight=self.lm.nll_weight,
+            reduction="mean",
+            ignore_index=self._vocabulary.categorical_pad_token_index
+        )
+        return losses
 
-        # out_subwords = pad_sequence(loss_matrix_probs, padding_value=self._tokenizer.token_to_id("[PAD]"))
-        # Decoder loss
-        losses = {
-            "loss_main_task": F.cross_entropy(
-                input=loss_matrix_probs.view(-1, loss_matrix_probs.shape[-1]),
-                target=self.get_main_task_gt(gt).view(-1),
-                weight=self.decoder.nll_weight, reduction="mean",
-                ignore_index=self._vocabulary.token_pad_index
-            ),
-            **{
-                f"loss_{task}": F.cross_entropy(
-                    input=secondary_tasks[task].view(-1, secondary_tasks[task].shape[-1]),
-                    target=gt["categoricals"][task].view(-1),
-                    weight=self.linear_secondary_tasks[task].nll_weight, reduction="mean",
-                    ignore_index=self._vocabulary.token_pad_index
-                )
-                for task in gt["categoricals"]  # Quickfix as LEMMA is main task now
-                if task not in {self.main_task, "lm_token"}
-            }
-        }
-
-        # (LM)
-        if len(emb) > 1:
-            # Divide the two direction of enc_outs[0]
-            fwd, bwd = enc_outs[0].chunk(2, dim=2)
-
-            # Remove the first last token and try to predict each next token (WordLevel)
-            # Issue: we are not at the word level
-            # Solution:
-            #   1. Use grouped subwords ? But wouldn't that be weird in terms of efficiency ? #
-            #          Not even sure it's possible (same problem ?)
-            #   2. Use RNN and predict flat_subwords. Need to share everything though.
-            losses["loss_lm_fwd"] = F.cross_entropy(
-                self.lm(pad(fwd[:-1], pos='pre')).view(-1, self._vocabulary.get_task_size("lm_token")),
-                gt["categoricals"]["lm_token"].view(-1),
-                weight=self.lm.nll_weight,
-                reduction="mean",
-                ignore_index=self._vocabulary.categorical_pad_token_index
-            )
-            # Same but previous token is the target
-            losses["loss_lm_bwd"] = F.cross_entropy(
-                self.lm(pad(bwd[1:], pos='post')).view(-1, self._vocabulary.get_task_size("lm_token")),
-                gt["categoricals"]["lm_token"].view(-1),
-                weight=self.lm.nll_weight,
-                reduction="mean",
-                ignore_index=self._vocabulary.categorical_pad_token_index
-            )
-
-        loss = sum([
-            self._weights.get(k[5:], 1) * losses[k]
-            for k in losses
-        ])
-        return preds, loss, losses, {
+    def _softmax_secondary_tasks(self, secondary_tasks: Dict[str, torch.Tensor]):
+        return {
             task: F.softmax(out, dim=-1).max(-1)
             for task, out in secondary_tasks.items()
+        }
+
+    def _compute_secondary_loss(self, secondary_tasks: Dict[str, torch.Tensor], gt: Dict[str, Dict[str, torch.Tensor]]):
+        return {
+            f"loss_{task}": F.cross_entropy(
+                input=secondary_tasks[task].view(-1, secondary_tasks[task].shape[-1]),
+                target=gt["categoricals"][task].view(-1),
+                weight=self.linear_secondary_tasks[task].nll_weight, reduction="mean",
+                ignore_index=self._vocabulary.token_pad_index
+            )
+            for task in gt["categoricals"]  # Quickfix as LEMMA is main task now
+            if task not in {self.main_task, "lm_token"}
         }
 
     def forward(self, batch):
         tokens, tokens_length, sequence_length = batch["token"], \
                                                  batch["token__length"], \
                                                  batch["token__sequence__length"]
-        (_, preds), _, _, secondary_tasks = self.proj(tokens, tokens_length, sequence_length)
+        encoded_words, encoded_sentences, secondary_tasks = self._encode(tokens, tokens_length, sequence_length)
+        enhanced_context = self._compute_context(encoded_sentences[-1], sequence_length, secondary_tasks)
+        if isinstance(self.decoder, AttentionalDecoder):
+            out = self.decoder(
+                encoded_tokens=encoded_words,
+                tokens_length=tokens_length,
+                encoded_sentence=enhanced_context
+            )
+        else:
+            raise NotImplementedError("ToDo: Implement linear as main task")
+            main_loss = self.decoder.loss()
+
+        (_, preds), _, _, secondary_tasks = self._encode(tokens, tokens_length, sequence_length)
         preds = preds.transpose(1, 0)
         return preds, {task: prediction.transpose(1, 0) for task, prediction in secondary_tasks.items()}
 
     def training_step(self, batch, batch_idx):
-        preds, loss, loss_dict, secondary_tasks = self.common_train_val_step(batch, batch_idx)
-        self.log("train_loss", loss, batch_size=batch[0]["token__sequence__length"].shape[0])
-        for task in loss_dict:
-            self.log(
-                "train_" + task,
-                loss_dict[task],
-                batch_size=batch[0]["token__sequence__length"].shape[0]
+        x, gt = batch
+        tokens, tokens_length, sequence_length = x["token"], x["token__length"], x["token__sequence__length"]
+
+        assert sum(sequence_length).item() == tokens.shape[1], "Number of words accross sentence should match " \
+                                                               "unrolled tokens"
+
+        encoded_words, encoded_sentences, secondary_tasks = self._encode(tokens, tokens_length, sequence_length)
+        enhanced_context = self._compute_context(encoded_sentences[-1], sequence_length, secondary_tasks)
+
+        if isinstance(self.decoder, AttentionalDecoder):
+            gt_tokens, gt_tokens_length = gt["non_categoricals"][self.main_task], \
+                                          gt["non_categoricals"][self.main_task+"__length"]
+            main_loss = self.decoder.loss(
+                ground_truth=gt_tokens,
+                ground_truth_lengths=gt_tokens_length,
+                encoded_tokens=encoded_words,
+                tokens_length=tokens_length,
+                encoded_sentence=enhanced_context
             )
+        else:
+            raise NotImplementedError("ToDo: Implement linear as main task")
+            main_loss = self.decoder.loss()
+
+        batch_size = batch[0]["token__sequence__length"].shape[0]
+
+        losses = {
+            "loss_main_task": main_loss
+        }
+        secondary_tasks = {
+            **self._compute_secondary_loss(secondary_tasks, gt),
+            **self._compute_lm(encoded_sentences[0], gt["categoricals"]["lm_token"], batch_size=batch_size)
+        }
+
+        self.log("train_main_loss", main_loss, batch_size=batch_size)
+        for task in secondary_tasks:
+            self.log("train_" + task, secondary_tasks[task], batch_size=batch_size)
+
+        loss = sum([
+            self._weights.get(loss_name[5:], 1) * loss_value  # Remove "loss_" to get task name
+            for loss_name, loss_value in {**losses, **secondary_tasks}.items()
+        ])
+
         return loss
 
-    # def _compute_metrics(self, preds, secondary_task, ground_truth):
-
     def compute_accuracy(self, preds, secondary_tasks, targets):
+        preds = pad_sequence(
+            [torch.tensor(pred, device="cpu") for pred in preds],
+            padding_value=self._vocabulary.token_pad_index,
+            batch_first=True
+        )
         for task in self.tasks.values():
             if task.name == "lm_token":
                 continue
-            if task.name == self.main_task:
-                out = preds.transpose(1, 0)
-            else:
-                _, out = secondary_tasks[task.name]  # First is probability
 
             if task.categorical:
                 gt = targets["categoricals"][task.name]
             else:
                 gt = targets["non_categoricals"][task.name].transpose(1, 0)  # [:, 1:]  # We remove the first dimension
 
+            if task.name == self.main_task:
+                out = preds
+                # If the length of the targets was not reached, create an empty tensor of the size of gt and add preds
+                if not task.categorical and preds.shape[1] < gt.shape[1]:
+                    out = torch.full(gt.shape, self._vocabulary.token_eos_index)
+                    out[:, :preds.shape[1]] = preds  # Replace value with pad value
+
+            else:
+                _, out = secondary_tasks[task.name]  # First is probability
+                out = out.cpu()
+
             attribute = getattr(self, f'acc_{task.name}')
-            attribute(out.cpu(), gt.cpu())
+            attribute(out, gt.cpu())
             self.log(f'acc_{task.name}', attribute, on_epoch=True, prog_bar=True)
 
             if task.name == self.main_task and not task.categorical:
                 # For non-categorical, specifically for lemma, let's make sure this computes the token level
                 #   accuracy
                 attribute = getattr(self, f'acc_{task.name}_token_level')
-                out, gt = self._vocabulary.tokenizer.decode_batch(out.cpu().tolist()), \
+                out, gt = self._vocabulary.tokenizer.decode_batch(out.tolist()), \
                           self._vocabulary.tokenizer.decode_batch(gt.cpu().tolist())
                 local_encoder = list(set(out + gt))
                 attribute(
@@ -346,19 +409,53 @@ class Pie(pl.LightningModule):
 
         :returns: Dictionary of losses per task and batch size
         """
-        preds, loss, loss_dict, secondary_tasks = self.common_train_val_step(batch, batch_idx)
-        self.log("dev_loss", loss, batch_size=batch[0]["token__sequence__length"].shape[0])
-        for task in loss_dict:
-            self.log(
-                "val_" + task,
-                loss_dict[task],
-                batch_size=batch[0]["token__sequence__length"].shape[0],
-                prog_bar=True if "lm" not in task else False
-            )
-        # Batch = x, y
-        self.compute_accuracy(preds, secondary_tasks, batch[1])
+        x, gt = batch
+        tokens, tokens_length, sequence_length = x["token"], x["token__length"], x["token__sequence__length"]
 
-        return loss_dict, batch[0]["token__sequence__length"].shape[0]
+        assert sum(sequence_length).item() == tokens.shape[1], "Number of words accross sentence should match " \
+                                                               "unrolled tokens"
+
+        encoded_words, encoded_sentences, secondary_tasks = self._encode(tokens, tokens_length, sequence_length)
+        enhanced_context = self._compute_context(encoded_sentences[-1], sequence_length, secondary_tasks)
+
+        if isinstance(self.decoder, AttentionalDecoder):
+            gt_tokens, gt_tokens_length = gt["non_categoricals"][self.main_task], \
+                                          gt["non_categoricals"][self.main_task+"__length"]
+            main_loss = self.decoder.loss(
+                ground_truth=gt_tokens,
+                ground_truth_lengths=gt_tokens_length,
+                encoded_tokens=encoded_words,
+                tokens_length=tokens_length,
+                encoded_sentence=enhanced_context
+            )
+            hyps, scores = self.decoder(
+                encoded_tokens=encoded_words,
+                tokens_length=tokens_length,
+                encoded_sentence=enhanced_context,
+                max_seq_len=gt_tokens_length.max()
+            )
+        else:
+            raise NotImplementedError("ToDo: Implement linear as main task")
+            main_loss = self.decoder.loss()
+
+        batch_size = batch[0]["token__sequence__length"].shape[0]
+
+        losses = {
+            "loss_main_task": main_loss
+        }
+        secondary_losses = {
+            **self._compute_secondary_loss(secondary_tasks, gt),
+            **self._compute_lm(encoded_sentences[0], gt["categoricals"]["lm_token"], batch_size=batch_size)
+        }
+
+        self.log("dev_main_loss", main_loss, batch_size=batch_size)
+        for task in secondary_losses:
+            self.log("dev_" + task, secondary_losses[task], batch_size=batch_size,
+                     prog_bar=True if "lm_" not in task else False)
+
+        self.compute_accuracy(hyps, self._softmax_secondary_tasks(secondary_tasks), gt)
+
+        return losses, batch_size
 
     def validation_epoch_end(self, outputs=None) -> Dict[str, torch.Tensor]:
         if not isinstance(outputs, List):
@@ -370,8 +467,6 @@ class Pie(pl.LightningModule):
             task: sum([step[0][task] for step in outputs]) / nb_batch
             for task in outputs[0][0].keys()
         }
-
-        print(avg_loss)
 
         for key in avg_loss:
             self_key = key[5:]
@@ -388,14 +483,9 @@ class Pie(pl.LightningModule):
         return avg_loss
 
     def test_step(self, batch, batch_idx):
-        preds, *_, secondary_tasks = self.common_train_val_step(batch, batch_idx)
-        self.compute_accuracy(preds, secondary_tasks, batch[1])
-
-    #def test_epoch_end(self, outputs: Union[EPOCH_OUTPUT, List[EPOCH_OUTPUT]]) -> None:
-
-    # def validation_epoch_end(self, outputs=None) -> None:
-    #    for task in self.accuracy:
-    #        self.log(f'{task}_acc', self.accuracy[task])
+        #preds, *_, secondary_tasks = self.common_train_val_step(batch)
+        #self.compute_accuracy(preds, secondary_tasks, batch[1])
+        return
 
     def configure_optimizers(self):
         optimizer = Ranger(self.parameters(), lr=self.lr)
