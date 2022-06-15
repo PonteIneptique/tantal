@@ -61,53 +61,41 @@ dev_loader = DataLoader(
     batch_size=64
 )
 test_dataset = GroundTruthDataset(TEST_FILE, vocabulary=vocabulary)
-#dev_dataset.downscale(.1)
-test_loader = DataLoader(
-    test_dataset,
-    collate_fn=dev_dataset.collate_fn,
-    batch_size=64
+test_loader = DataLoader(test_dataset, collate_fn=dev_dataset.collate_fn, batch_size=64)
+
+
+def create_trainer():
+    return pl.Trainer(
+        gpus=1,
+        max_epochs=100,
+        gradient_clip_val=5,
+        callbacks=[
+            TQDMProgressBar(),
+            EarlyStopping(monitor="lemma_pre", patience=5, verbose=True, mode="max"),
+            ModelCheckpoint(monitor="lemma_pre", save_top_k=2, mode="max")
+        ],
+        amp_level="01"
+    )
+
+hyper_params = dict(
+        cemb_dim=300, cemb_layers=2, hidden_size=150, num_layers=1,
+        dropout=.3, cell="LSTM", char_cell="RNN", lr=0.0049
 )
 
 for i in range(5):
-    model = Pie(
-        vocabulary,
-        main_task="lemma",
-        cemb_dim=300, cemb_layers=2, hidden_size=150, num_layers=1,
-        dropout=.3, cell="LSTM", char_cell="RNN", lr=0.0049,
-        use_secondary_tasks_decision=True
-    )
-    trainer = pl.Trainer(
-        gpus=1,
-        max_epochs=100,
-        gradient_clip_val=5,
-        callbacks=[
-            TQDMProgressBar(),
-            EarlyStopping(monitor="acc_lemma", patience=5, verbose=True, mode="max"),
-            ModelCheckpoint(monitor="acc_lemma", save_top_k=2, mode="max")
-        ]
-    )
+    model = Pie(vocabulary, main_task="lemma", use_secondary_tasks_decision=True, **hyper_params)
+    trainer = create_trainer()
     trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=dev_loader)
     trainer.save_checkpoint(f"FroWithUse{i}.model")
-    break
+    model.freeze()
     trainer.test(dataloaders=test_loader, model=model)
 
-    model = Pie(
-        vocabulary,
-        main_task="lemma",
-        cemb_dim=300, cemb_layers=2, hidden_size=150, num_layers=1,
-        dropout=.3, cell="LSTM", char_cell="RNN", lr=0.0049,
-        use_secondary_tasks_decision=False
-    )
-    trainer = pl.Trainer(
-        gpus=1,
-        max_epochs=100,
-        gradient_clip_val=5,
-        callbacks=[
-            TQDMProgressBar(),
-            EarlyStopping(monitor="acc_lemma", patience=5, verbose=True, mode="max"),
-            ModelCheckpoint(monitor="acc_lemma", save_top_k=2, mode="max")
-        ]
-    )
+    del model, trainer
+
+    model = Pie(vocabulary, main_task="lemma", use_secondary_tasks_decision=False, **hyper_params)
+    trainer = create_trainer()
     trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=dev_loader)
     trainer.save_checkpoint(f"FroWithoutUse{i}.model")
     trainer.test(dataloaders=test_loader, model=model)
+
+    del model, trainer

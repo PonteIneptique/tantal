@@ -2,6 +2,21 @@ from dataclasses import dataclass
 from typing import Union, Dict
 from torch import Tensor
 
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support, balanced_accuracy_score
+
+
+def compute_scores(trues, preds):
+    def format_score(score):
+        return round(float(score), 4)
+    p, r, f1, _ = precision_recall_fscore_support(trues, preds, average="macro", zero_division=0)
+    b = format_score(balanced_accuracy_score(trues, preds))
+    p = format_score(p)
+    r = format_score(r)
+    a = format_score(accuracy_score(trues, preds))
+
+    return {'acc': a, 'pre': p, 'rec': r, 'sup': len(trues),
+            'bal_acc': b, 'f1': format_score(f1)}
+
 
 @dataclass
 class ScoreWatcher:

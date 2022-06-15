@@ -116,6 +116,9 @@ class AttentionalDecoder(nn.Module):
              tokens_length: torch.Tensor,
              encoded_sentence: Optional[torch.Tensor] = None):
 
+        encoded_sentence = F.dropout(encoded_sentence, p=self.dropout, training=self.training)
+        encoded_tokens = F.dropout(encoded_tokens, p=self.dropout, training=self.training)
+
         logits = self._loss_logits(ground_truth, ground_truth_lengths, encoded_tokens, tokens_length, encoded_sentence)
         ground_truth = ground_truth[1:]  # remove <bos> from targets
 

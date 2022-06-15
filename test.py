@@ -20,7 +20,7 @@ CHAR_LEVEL = True
 #vocabulary = Vocabulary.from_file("./saved_models/fro2/vocabulary.json")
 
 model = Pie.load_from_checkpoint(
-    "saved_models/fro/with_use/epoch=41-step=15792.ckpt",
+    "/home/thibault/dev/tantal/lightning_logs/version_199/checkpoints/epoch=43-step=16544.ckpt",
     hparams_file="saved_models/fro/with_use/hparams.yaml",
     vocabulary=Vocabulary.from_file("saved_models/fro/with_use/vocabulary.json")
 )
