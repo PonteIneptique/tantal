@@ -14,7 +14,7 @@ import torchmetrics
 from tantal.modules.pie.decoder import LinearDecoder, RNNEncoder, AttentionalDecoder
 from tantal.modules.pie.embeddings import PieEmbeddings
 from tantal.data.vocabulary import Vocabulary, Task
-from tantal.utils import ScoreWatcher, compute_scores
+from tantal.utils import ScoreWatcher, compute_scores, get_confusion_matrix_table, print_table
 from tantal.modules.pie.utils import flatten_padded_batch, pad
 from ranger import Ranger
 
@@ -387,9 +387,12 @@ class Pie(pl.LightningModule):
         return returns
 
     def _finalize_metrics(self, pred_dicts: Dict[str, Tuple[List[str], List[str]]],
-                          log_kwargs: Optional[Dict[str, Any]] = None):
+                          log_kwargs: Optional[Dict[str, Any]] = None,
+                          confusion_matrix: bool = False):
         if not log_kwargs:
             log_kwargs = {}
+
+        returns = {}
         for task in self.tasks.values():
 
             if task.name == "lm_token":
@@ -397,6 +400,8 @@ class Pie(pl.LightningModule):
 
             # Compute Score "à la Pie"
             preds, trues = pred_dicts[task.name]
+            if confusion_matrix:
+                returns[task.name] = get_confusion_matrix_table(trues, preds)
             scores = compute_scores(np.array(trues, dtype="object"), np.array(preds, dtype="object"))
             for key in scores:
                 if key == "sup":
@@ -408,6 +413,8 @@ class Pie(pl.LightningModule):
                         continue
                     self.log(f'{task.name}_{key}', self.metrics[task.name][key].compute(), **log_kwargs)
                     self.metrics[task.name][key].reset()
+
+        return returns
 
     def training_step(self, batch, batch_idx):
         x, gt = batch
@@ -581,7 +588,11 @@ class Pie(pl.LightningModule):
         if not isinstance(outputs, list):
             outputs = [outputs]
 
-        self._finalize_metrics(self._collate_steps_pred_gt(outputs))
+        collated = self._collate_steps_pred_gt(outputs)
+        print(collated["lemma"])
+        for task, matrix in self._finalize_metrics(collated, confusion_matrix=True).items():
+            print("====TASK====")
+            print_table(matrix)
 
     def configure_optimizers(self):
         optimizer = Ranger(self.parameters(), lr=self.lr)

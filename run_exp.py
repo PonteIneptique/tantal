@@ -15,7 +15,7 @@ TOKENIZER_PATH = "fro3.json"
 TRAIN_FILE = "./exp_data/fro/train.tsv"
 DEV_FILE = "./exp_data/fro/dev.tsv"
 TEST_FILE = "./exp_data/fro/test.tsv"
-CHAR_LEVEL = True
+CHAR_LEVEL = False
 
 if not os.path.exists(TOKENIZER_PATH):
     if CHAR_LEVEL:
@@ -26,8 +26,8 @@ if not os.path.exists(TOKENIZER_PATH):
         )
         tokenizer.save(TOKENIZER_PATH)
     else:
-        tokenizer = create_tokenizer("bpe", "NFKD", "Whitespace,Digits")
-        tokenizer_trainer = create_trainer("bpe", 500, special_tokens=["[UNK]", "[PAD]", "[EOS]", "[BOS]"])
+        tokenizer = create_tokenizer("wordpiece", "NFKD", "Whitespace,Digits")
+        tokenizer_trainer = create_trainer("wordpiece", 400, special_tokens=["[UNK]", "[PAD]", "[EOS]", "[BOS]"])
         tokenizer.train_from_iterator(parse_file(TRAIN_FILE), trainer=tokenizer_trainer)
         tokenizer.save(TOKENIZER_PATH)
 else:

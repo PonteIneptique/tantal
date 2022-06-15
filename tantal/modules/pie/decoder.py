@@ -116,6 +116,7 @@ class AttentionalDecoder(nn.Module):
              tokens_length: torch.Tensor,
              encoded_sentence: Optional[torch.Tensor] = None):
 
+        #  This one might be too much
         encoded_sentence = F.dropout(encoded_sentence, p=self.dropout, training=self.training)
         encoded_tokens = F.dropout(encoded_tokens, p=self.dropout, training=self.training)
 
