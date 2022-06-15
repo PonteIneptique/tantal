@@ -1,6 +1,7 @@
-from typing import List, Dict, Optional, Tuple, Union, IO, Callable
+from typing import List, Dict, Optional, Tuple, Union, IO, Callable, Any
 from collections import namedtuple
 
+import numpy as np
 import torch
 from torch import optim
 from torch import nn
@@ -13,7 +14,7 @@ import torchmetrics
 from tantal.modules.pie.decoder import LinearDecoder, RNNEncoder, AttentionalDecoder
 from tantal.modules.pie.embeddings import PieEmbeddings
 from tantal.data.vocabulary import Vocabulary, Task
-from tantal.utils import ScoreWatcher
+from tantal.utils import ScoreWatcher, compute_scores
 from tantal.modules.pie.utils import flatten_padded_batch, pad
 from ranger import Ranger
 
@@ -147,21 +148,6 @@ class Pie(pl.LightningModule):
             for key in self._weights
         }
         self.metrics = {}
-        for task in self.tasks:
-            if task != "lm_token":
-                if self.tasks[task].categorical:
-                    self.metrics[task] = {
-                        "stats": torchmetrics.StatScores(
-                            num_classes=self._vocabulary.get_task_size(task)
-                        ),
-                        "pre": torchmetrics.Precision(num_classes=self._vocabulary.get_task_size(task), average="macro"),
-                        "rec": torchmetrics.Recall(num_classes=self._vocabulary.get_task_size(task), average="macro"),
-                        "acc": torchmetrics.Accuracy(num_classes=self._vocabulary.get_task_size(task), average="micro")
-                    }
-                else:
-                    self.metrics[task] = {
-                        "acc": torchmetrics.Accuracy(average="micro")
-                    }
 
     def get_main_task_gt(self, gt: Dict[str, Dict[str, torch.Tensor]], length: bool = False):
         if self.tasks[self.main_task].categorical:
@@ -321,6 +307,84 @@ class Pie(pl.LightningModule):
         preds = preds.transpose(1, 0)
         return preds, {task: prediction.transpose(1, 0) for task, prediction in secondary_tasks.items()}
 
+    def compute_accuracy(self, preds, secondary_tasks, targets, sequences_lengths: torch.Tensor):
+        preds = pad_sequence(
+            [torch.tensor(pred, device="cpu", requires_grad=False) for pred in preds],
+            padding_value=self._vocabulary.token_pad_index,
+            batch_first=True
+        )
+        returns: Dict[str, List[Tuple[str, str]]] = {
+            task: []
+            for task in self.tasks
+            if "lm_token" != task
+        }
+        for task in self.tasks.values():
+            if task.name == "lm_token":
+                continue
+
+            if task.categorical:
+                gt = targets["categoricals"][task.name].cpu()
+            else:
+                gt = targets["non_categoricals"][task.name].transpose(1, 0).cpu()
+
+            if task.name == self.main_task:
+                out = preds.cpu()
+                # If the length of the targets was not reached, create an empty tensor of the size of gt and add preds
+                if not task.categorical and preds.shape[1] < gt.shape[1]:
+                    out = torch.full(gt.shape, self._vocabulary.token_pad_index, device="cpu", requires_grad=False)
+                    out[:, :preds.shape[1]] = preds  # Replace value with pad value
+            # If we have a a non main task
+            else:
+                _, out = secondary_tasks[task.name]  # First is probability
+                out = out.cpu()
+
+            if task.categorical:
+                out, gt = flatten_padded_batch(out, sequences_lengths), \
+                          flatten_padded_batch(gt.cpu(), sequences_lengths)
+
+                returns[task.name].extend(list(zip(self._vocabulary.decode(out.tolist(), task=task.name),
+                                                   self._vocabulary.decode(gt.tolist(), task=task.name))))
+            else:
+                # For non-categorical, specifically for lemma, let's make sure this computes the token level
+                #   accuracy
+                decoded_out, decoded_gt = self._vocabulary.tokenizer.decode_batch(out.tolist()), \
+                          self._vocabulary.tokenizer.decode_batch(gt.tolist())
+                returns[task.name].extend(list(zip(decoded_out, decoded_gt)))
+                local_encoder = list(set(decoded_out + decoded_gt))
+                out, gt = torch.tensor([local_encoder.index(val) for val in decoded_out],
+                                       device="cpu", requires_grad=False), \
+                          torch.tensor([local_encoder.index(val) for val in decoded_gt],
+                                       device="cpu", requires_grad=False)
+
+            if task.name in self.metrics:
+                for key in self.metrics[task.name]:
+                    self.metrics[task.name][key](out, gt)
+
+        return returns
+
+    def _finalize_metrics(self, pred_dicts: Dict[str, Tuple[List[str], List[str]]],
+                          log_kwargs: Optional[Dict[str, Any]] = None):
+        if not log_kwargs:
+            log_kwargs = {}
+        for task in self.tasks.values():
+
+            if task.name == "lm_token":
+                continue
+
+            # Compute Score "à la Pie"
+            preds, trues = pred_dicts[task.name]
+            scores = compute_scores(np.array(trues, dtype="object"), np.array(preds, dtype="object"))
+            for key in scores:
+                if key == "sup":
+                    continue
+                self.log(f"{task.name}_{key}", scores[key], **log_kwargs)
+            if task.name in self.metrics:
+                for key in self.metrics[task.name]:
+                    if key == "stats":
+                        continue
+                    self.log(f'{task.name}_{key}', self.metrics[task.name][key].compute())
+                    self.metrics[task.name][key].reset()
+
     def training_step(self, batch, batch_idx):
         x, gt = batch
         tokens, tokens_length, sequence_length = x["token"], x["token__length"], x["token__sequence__length"]
@@ -415,21 +479,25 @@ class Pie(pl.LightningModule):
             self.log("dev_" + task, secondary_losses[task], batch_size=batch_size,
                      prog_bar=True if "lm_" not in task else False)
 
-        self.compute_accuracy(hyps, self._softmax_secondary_tasks(secondary_tasks), gt, sequence_length)
+        preds = self.compute_accuracy(hyps, self._softmax_secondary_tasks(secondary_tasks), gt, sequence_length)
 
-        return {**losses, **secondary_losses}, batch_size
+        return {**losses, **secondary_losses}, batch_size, preds
 
     def validation_epoch_end(self, outputs=None) -> Dict[str, torch.Tensor]:
+        # outputs: List of (losses, batch_size, preds)
+
+        #sortir preds de outputs, ainsi que batch_size et losses :
+        losses, batch_size, preds = zip(*outputs)
         if not isinstance(outputs, List):
             outputs = [outputs]
 
-        self._finalize_metrics()
+        self._finalize_metrics(self._collate_steps_pred_gt(preds), log_kwargs={"prog_bar": True})
 
-        nb_batch = sum([step[1] for step in outputs])
+        nb_batch = sum(batch_size)
 
         avg_loss = {
-            task: sum([step[0][task]*step[1] for step in outputs]) / nb_batch
-            for task in outputs[0][0].keys()
+            task: sum([loss_dict[task]*b_size for loss_dict, b_size in zip(losses, batch_size)]) / nb_batch
+            for task in losses[0].keys()
         }
 
         for key in avg_loss:
@@ -445,57 +513,6 @@ class Pie(pl.LightningModule):
             print(self._watchers[task].repr(task, self._weights[task]))
 
         return avg_loss
-
-    def compute_accuracy(self, preds, secondary_tasks, targets, sequences_lengths: torch.Tensor):
-        preds = pad_sequence(
-            [torch.tensor(pred, device="cpu", requires_grad=False) for pred in preds],
-            padding_value=self._vocabulary.token_pad_index,
-            batch_first=True
-        )
-        for task in self.tasks.values():
-            if task.name == "lm_token":
-                continue
-
-            if task.categorical:
-                gt = targets["categoricals"][task.name].cpu()
-            else:
-                gt = targets["non_categoricals"][task.name].transpose(1, 0).cpu()
-
-            if task.name == self.main_task:
-                out = preds.cpu()
-                # If the length of the targets was not reached, create an empty tensor of the size of gt and add preds
-                if not task.categorical and preds.shape[1] < gt.shape[1]:
-                    out = torch.full(gt.shape, self._vocabulary.token_pad_index, device="cpu", requires_grad=False)
-                    out[:, :preds.shape[1]] = preds  # Replace value with pad value
-            # If we have a a non main task
-            else:
-                _, out = secondary_tasks[task.name]  # First is probability
-                out = out.cpu()
-
-            if task.categorical:
-                out, gt = flatten_padded_batch(out, sequences_lengths), \
-                          flatten_padded_batch(gt.cpu(), sequences_lengths)
-            else:
-                # For non-categorical, specifically for lemma, let's make sure this computes the token level
-                #   accuracy
-                out, gt = self._vocabulary.tokenizer.decode_batch(out.tolist()), \
-                          self._vocabulary.tokenizer.decode_batch(gt.tolist())
-                local_encoder = list(set(out + gt))
-                out, gt = torch.tensor([local_encoder.index(val) for val in out], device="cpu", requires_grad=False), \
-                          torch.tensor([local_encoder.index(val) for val in gt], device="cpu", requires_grad=False)
-
-            for key in self.metrics[task.name]:
-                self.metrics[task.name][key](out, gt)
-
-    def _finalize_metrics(self):
-        for task in self.tasks.values():
-            if task.name == "lm_token":
-                continue
-            for key in self.metrics[task.name]:
-                if key == "stats":
-                    continue
-                self.log(f'{key}_{task.name}', self.metrics[task.name][key].compute())
-                self.metrics[task.name][key].reset()
 
     def test_step(self, batch, batch_idx):
         x, gt = batch
@@ -520,14 +537,27 @@ class Pie(pl.LightningModule):
             raise NotImplementedError("ToDo: Implement linear as main task")
             main_loss = self.decoder.loss()
 
-        batch_size = batch[0]["token__sequence__length"].shape[0]
+        preds = self.compute_accuracy(hyps, self._softmax_secondary_tasks(secondary_tasks), gt, sequence_length)
+        return preds
 
-        self.compute_accuracy(hyps, self._softmax_secondary_tasks(secondary_tasks), gt, sequence_length)
+    def _collate_steps_pred_gt(
+            self, data: List[Dict[str, List[Tuple[str, str]]]]) -> Dict[str, Tuple[List[str], List[str]]]:
+        returns = {
+            key: ([], [])
+            for key in data[0].keys()
+        }
+        for step in data:
+            for task_name in step:
+                out, gt = zip(*step[task_name])
+                returns[task_name][0].extend(out)
+                returns[task_name][1].extend(gt)
+        return returns
 
-        return {}
+    def test_epoch_end(self, outputs) -> None:
+        if not isinstance(outputs, list):
+            outputs = [outputs]
 
-    def on_test_epoch_end(self) -> None:
-        self._finalize_metrics()
+        self._finalize_metrics(self._collate_steps_pred_gt(outputs))
 
     def configure_optimizers(self):
         optimizer = Ranger(self.parameters(), lr=self.lr)
@@ -535,7 +565,7 @@ class Pie(pl.LightningModule):
             optimizer,
             mode="max",
             threshold=1e-3,
-            verbose=False,
+            verbose=True,
             factor=.6,
             patience=2,
             min_lr=1e-6
@@ -546,7 +576,7 @@ class Pie(pl.LightningModule):
                 {
                     "scheduler": scheduler,
                     "interval": "epoch",
-                    "monitor": "acc_lemma_token_level",
+                    "monitor": "lemma_pre",
                     "frequency": 1
                 }
             ]
