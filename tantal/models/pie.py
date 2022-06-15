@@ -1,8 +1,4 @@
-<<<<<<< HEAD
-from typing import List, Dict, Optional, Tuple, Union, IO, Callable
-=======
 from typing import List, Dict, Optional, Tuple, Union, IO, Callable, Any
->>>>>>> 3f29304c7fc9b68c1697e6726389c4136f93c1ee
 from collections import namedtuple
 
 import numpy as np
