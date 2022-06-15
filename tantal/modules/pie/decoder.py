@@ -8,6 +8,8 @@ import torch.nn.functional as F
 from tantal.data.vocabulary import Vocabulary
 from tantal.modules import initialization
 from tantal.modules.pie.attention import Attention
+from tantal.modules.pie.utils import pack_sort
+
 
 TINY = 1e-8
 
@@ -43,6 +45,7 @@ class AttentionalDecoder(nn.Module):
         self.num_layers = num_layers
         self.dropout = dropout
         self.init_rnn = init_rnn
+        self.vocabulary_dim: int = vocabulary.tokenizer_size
         super().__init__()
 
         self.eos = vocabulary.token_eos_index
@@ -73,14 +76,64 @@ class AttentionalDecoder(nn.Module):
         # linear
         initialization.init_linear(self.proj)
 
+    def _loss_logits(
+            self,
+            ground_truth: torch.Tensor,
+            ground_truth_lengths: torch.Tensor,
+            encoded_tokens: torch.Tensor,
+            tokens_length: torch.Tensor,
+            encoded_sentence: Optional[torch.Tensor] = None
+    ):
+        """
+        Decoding routine for training. Returns the logits corresponding to
+        the targets for the `loss` method. Takes care of padding.
+        """
+        ground_truth, ground_truth_lengths = ground_truth[:-1], ground_truth_lengths - 1
+        embs = self.embs(ground_truth)
+
+        if self.context_dim > 0:
+            if encoded_sentence is None:
+                raise ValueError("Contextual Decoder needs `context`")
+            # (seq_len x batch x emb_dim) + (batch x context_dim)
+            embs = torch.cat(
+                [embs, encoded_sentence.unsqueeze(0).repeat(embs.size(0), 1, 1)],
+                dim=2)
+
+        embs, unsort = pack_sort(embs, ground_truth_lengths.tolist())
+
+        outs, _ = self.rnn(embs)
+        outs, _ = pad_packed_sequence(outs)
+        outs = outs[:, unsort]
+
+        encoded_sentence, _ = self.attn(outs, encoded_tokens, tokens_length)
+
+        return self.proj(encoded_sentence)
+
+    def loss(self,
+             ground_truth: torch.Tensor,
+             ground_truth_lengths: torch.Tensor,
+             encoded_tokens: torch.Tensor,
+             tokens_length: torch.Tensor,
+             encoded_sentence: Optional[torch.Tensor] = None):
+
+        encoded_sentence = F.dropout(encoded_sentence, p=self.dropout, training=self.training)
+        encoded_tokens = F.dropout(encoded_tokens, p=self.dropout, training=self.training)
+
+        logits = self._loss_logits(ground_truth, ground_truth_lengths, encoded_tokens, tokens_length, encoded_sentence)
+        ground_truth = ground_truth[1:]  # remove <bos> from targets
+
+        return F.cross_entropy(
+            logits.view(-1, self.vocabulary_dim), ground_truth.view(-1),
+            weight=self.nll_weight, reduction="mean",
+            ignore_index=self.vocabulary.token_pad_index)
+
     def forward(
             self,
-            encoded_words,
-            lengths,
+            encoded_tokens,
+            tokens_length,
             max_seq_len=20,
             bos=None,
             eos=None,
-            train_or_eval: bool = False,
             encoded_sentence=None) -> Tuple[Optional[torch.Tensor], List[Tuple[int]], List[float]]:
         """
          Decoding routine for inference with step-wise argmax procedure
@@ -93,20 +146,14 @@ class AttentionalDecoder(nn.Module):
          """
         eos = eos or self.eos
         bos = bos or self.bos
-        hidden, batch, device = None, encoded_words.size(1), encoded_words.device
+        hidden, batch, device = None, encoded_tokens.size(1), encoded_tokens.device
 
         inp = torch.zeros(batch, dtype=torch.int64, device=device) + bos
-        #hyps: List[Tuple[int]] = []
+        hyps: List[Tuple[int]] = []
         final_scores = torch.tensor([0 for _ in range(batch)], dtype=torch.float64, device="cpu")
 
         # To make a "character" level loss, we'll append to a loss matrix each probs
         #  It necessarily starts with <BOS>
-        orig_max_seq_len = max_seq_len
-        loss_matrix_probs = torch.full(
-            (max_seq_len, batch, self.vocabulary.tokenizer_size),
-            .0,
-            device=device
-        )
 
         # As we go, we'll reduce the tensor size by popping finished prediction
         #  To keep adding new characters to the right words, we
@@ -134,7 +181,7 @@ class AttentionalDecoder(nn.Module):
             outs, hidden = self.rnn(emb, hidden)
             # Hidden : Tensor(1 x batch_size x emb_size)
 
-            outs, _ = self.attn(outs, encoded_words, lengths)
+            outs, _ = self.attn(outs, encoded_tokens, tokens_length)
             outs = self.proj(outs).squeeze(0)
 
             # Get logits
@@ -161,9 +208,6 @@ class AttentionalDecoder(nn.Module):
             #   of current sequence output
             seq_output[tensor_to_original_batch_indexes] = inp
 
-            # If we are training, we also set-up the same thing for the loss_matrix_probs#
-            loss_matrix_probs[char_number][tensor_to_original_batch_indexes] = outs
-
             # We set the score where we have EOS predictions as 0
             score[inp == eos] = 0
 
@@ -171,7 +215,7 @@ class AttentionalDecoder(nn.Module):
             final_scores[tensor_to_original_batch_indexes] += score.cpu()
 
             # We add this new output to the final hypothesis
-            #hyps.append(seq_output.tolist())
+            hyps.append(seq_output.tolist())
 
             # If there nothing else than EOS, it's the end of the prediction time
             if non_eos.sum() == 0:
@@ -187,7 +231,7 @@ class AttentionalDecoder(nn.Module):
             #   so we filter them at the first dimension
             inp = inp[keep]
             encoded_sentence = encoded_sentence[keep]
-            lengths = lengths[keep]
+            tokens_length = tokens_length[keep]
 
             # However, hidden is 3D (Tensor(1 x batch_size x _)
             #   So we filter at the second dimension directly
@@ -201,17 +245,13 @@ class AttentionalDecoder(nn.Module):
             #     but if the maximum length is popped, it is not in sync anymore.
             #   In order to keep wording, we remove extra dimension if lengths.max() has changed.
             # We then update the first (max_seq_len) and second (batch_size) dimensions accordingly.
-            max_seq_len = lengths.max()
-            encoded_words = encoded_words[:max_seq_len, keep, :]
+            max_seq_len = tokens_length.max()
+            encoded_tokens = encoded_tokens[:max_seq_len, keep, :]
 
-        #hyps = [hyp for hyp in zip(*hyps)]
-        #final_scores = [s / (len(hyp) + TINY) for s, hyp in zip(final_scores, hyps)]
-        if train_or_eval and loss_matrix_probs.shape[0] < orig_max_seq_len:
-            loss_matrix_probs = loss_matrix_probs.expand(
-                orig_max_seq_len,
-                *loss_matrix_probs.shape[1:]
-            )
-        return loss_matrix_probs, F.log_softmax(loss_matrix_probs, dim=-1).max(-1)[-1].to(encoded_words.device)
+        hyps = [hyp for hyp in zip(*hyps)]
+        final_scores = [s / (len(hyp) + TINY) for s, hyp in zip(final_scores, hyps)]
+
+        return hyps, final_scores
 
 
 def sequential_dropout(inp: torch.Tensor, p: float, training: bool):

@@ -1,5 +1,6 @@
 import torch
 from torch.nn import functional as F
+from torch.nn.utils.rnn import pack_padded_sequence
 
 
 def flatten_padded_batch(batch, nwords):
@@ -84,3 +85,38 @@ def pad_flat_batch(emb, nwords, maxlen=None):
     output = torch.stack(output, dim=1)
 
     return output
+
+
+def pack_sort(inp, lengths, batch_first=False):
+    """
+    Transform input into PaddedSequence sorting batch by length (as required).
+    Also return an index variable that unsorts the output back to the original
+    order.
+
+    Parameters:
+    -----------
+    inp: torch.Tensor(seq_len x batch x dim)
+    lengths: LongTensor of length ``batch``
+
+    >>> from torch.nn.utils.rnn import pad_packed_sequence as unpack
+    >>> inp = torch.tensor([[1, 3], [2, 4], [0, 5]], dtype=torch.float)
+    >>> lengths = torch.tensor([2, 3]) # unsorted order
+    >>> sorted_inp, unsort = pack_sort(inp, lengths)
+    >>> sorted_inp, _ = unpack(sorted_inp)
+    >>> sorted_inp[:, unsort].tolist()  # original order
+    [[1.0, 3.0], [2.0, 4.0], [0.0, 5.0]]
+    >>> sorted_inp.tolist()  # sorted by length
+    [[3.0, 1.0], [4.0, 2.0], [5.0, 0.0]]
+    """
+    if not isinstance(lengths, torch.Tensor):
+        lengths = torch.tensor(lengths)  # no need to use gpu
+
+    lengths, sort = torch.sort(lengths, descending=True)
+    _, unsort = sort.sort()
+
+    if batch_first:
+        inp = pack_padded_sequence(inp[sort], lengths.tolist())
+    else:
+        inp = pack_padded_sequence(inp[:, sort], lengths.tolist())
+
+    return inp, unsort
