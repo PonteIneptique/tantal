@@ -45,7 +45,8 @@ class Pie(pl.LightningModule):
             # dropout
             dropout: float = .3,
             categorical: bool = False,
-            use_secondary_tasks_decision: bool = True
+            use_secondary_tasks_decision: bool = True,
+            mix_with_linear: bool = False
     ):
         super(Pie, self).__init__()
         self.save_hyperparameters(ignore=["vocabulary"])
@@ -61,6 +62,7 @@ class Pie(pl.LightningModule):
         self.dropout: float = dropout
         self.cemb_layers: int = cemb_layers
         self.use_secondary_tasks_decision: bool = use_secondary_tasks_decision
+        self.mix_with_linear: bool = mix_with_linear
         # only during training
         self.init_rnn: str = init_rnn
 
@@ -73,13 +75,22 @@ class Pie(pl.LightningModule):
         embedding_out_dim = 2 * cemb_dim
         encoder_out_dim = 2 * hidden_size
         self._context_dim: int = encoder_out_dim
-
+        self._mix_with_linear_dim: int = 0
+        self.context_mixer: Optional[nn.Linear] = None
         if self.use_secondary_tasks_decision:
-            self._context_dim += sum([
-                vocabulary.get_task_size(task.name)
-                for task in self.tasks.values()
-                if task.categorical and task.name not in {main_task, "lm_token"}
-            ])
+            if self.mix_with_linear:
+                self._mix_with_linear_dim = sum([
+                    vocabulary.get_task_size(task.name)
+                    for task in self.tasks.values()
+                    if task.categorical and task.name not in {main_task, "lm_token"}
+                ]) + self._context_dim
+                self.context_mixer = nn.Linear(self._mix_with_linear_dim, self._context_dim)
+            else:
+                self._context_dim += sum([
+                    vocabulary.get_task_size(task.name)
+                    for task in self.tasks.values()
+                    if task.categorical and task.name not in {main_task, "lm_token"}
+                ])
 
         self.embedding = PieEmbeddings(
             vocab_size=self._vocabulary.tokenizer_size,
@@ -148,6 +159,11 @@ class Pie(pl.LightningModule):
             for key in self._weights
         }
         self.metrics = {}
+        for task in self.tasks:
+            if not self.tasks[task].categorical:
+                self.metrics[task] = {
+                    "cer": torchmetrics.CharErrorRate()
+                }
 
     def get_main_task_gt(self, gt: Dict[str, Dict[str, torch.Tensor]], length: bool = False):
         if self.tasks[self.main_task].categorical:
@@ -194,11 +210,16 @@ class Pie(pl.LightningModule):
             secondary_tasks: Dict[str, torch.Tensor],
     ):
         if self.use_secondary_tasks_decision:
+            concat_tensor = torch.cat([
+                encoded_sentences,
+                *secondary_tasks.values()
+            ], dim=-1)
+
+            if self.mix_with_linear:
+                concat_tensor = self.context_mixer(concat_tensor)
+
             return flatten_padded_batch(
-                torch.cat([
-                    encoded_sentences,
-                    *secondary_tasks.values()
-                ], dim=-1),
+                concat_tensor,
                 sequence_length
             )
         else:
@@ -358,7 +379,10 @@ class Pie(pl.LightningModule):
 
             if task.name in self.metrics:
                 for key in self.metrics[task.name]:
-                    self.metrics[task.name][key](out, gt)
+                    if key == "cer" and not task.categorical:
+                        self.metrics[task.name][key](decoded_out, decoded_gt)
+                    else:
+                        self.metrics[task.name][key](out, gt)
 
         return returns
 
@@ -382,7 +406,7 @@ class Pie(pl.LightningModule):
                 for key in self.metrics[task.name]:
                     if key == "stats":
                         continue
-                    self.log(f'{task.name}_{key}', self.metrics[task.name][key].compute())
+                    self.log(f'{task.name}_{key}', self.metrics[task.name][key].compute(), **log_kwargs)
                     self.metrics[task.name][key].reset()
 
     def training_step(self, batch, batch_idx):
@@ -500,8 +524,6 @@ class Pie(pl.LightningModule):
             for task in losses[0].keys()
         }
 
-        print(avg_loss)
-
         for key in avg_loss:
             self_key = key[5:]
             _, self._weights[self_key] = self._watchers[self_key].update_steps_on_mode(
@@ -565,12 +587,12 @@ class Pie(pl.LightningModule):
         optimizer = Ranger(self.parameters(), lr=self.lr)
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(
             optimizer,
-            mode="max",
-            threshold=1e-3,
+            mode="min",
+            threshold=0.001,
             verbose=True,
             factor=.6,
             patience=2,
-            min_lr=1e-6
+            min_lr=1e-6,
         )
         return (
             [optimizer],
@@ -578,7 +600,7 @@ class Pie(pl.LightningModule):
                 {
                     "scheduler": scheduler,
                     "interval": "epoch",
-                    "monitor": "lemma_pre",
+                    "monitor": "lemma_cer",
                     "frequency": 1
                 }
             ]

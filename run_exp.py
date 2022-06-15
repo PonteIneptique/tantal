@@ -33,23 +33,26 @@ if not os.path.exists(TOKENIZER_PATH):
 else:
     tokenizer = Tokenizer.from_file(TOKENIZER_PATH)
 
+
+TASKS = [
+    Task("lemma", categorical=False, unknown_ok=True),
+    Task("POS", categorical=True, unknown_ok=True)
+    #pos	Dis	Entity	Gend	Numb	Case	Deg	Mood_Tense_Voice	Person
+]
+
 vocabulary = Vocabulary(
     tokenizer=tokenizer,
-    tasks=[
-        Task("lemma", categorical=False, unknown_ok=True),
-        Task("POS", categorical=True, unknown_ok=True)
-        #pos	Dis	Entity	Gend	Numb	Case	Deg	Mood_Tense_Voice	Person
-    ]
+    tasks=TASKS
 )
 train_dataset = GroundTruthDataset(TRAIN_FILE, vocabulary=vocabulary)
-train_dataset.fit_vocab(max_lm_tokens=10000)
+train_dataset.fit_vocab(max_lm_tokens=20000)
 vocabulary.to_file("vocabulary.json")
 
 #train_dataset.downscale(.01)
 train_loader = DataLoader(
     train_dataset,
     collate_fn=train_dataset.collate_fn,
-    batch_size=64,
+    batch_size=32,
     shuffle=True
 )
 
@@ -58,7 +61,7 @@ dev_dataset = GroundTruthDataset(DEV_FILE, vocabulary=vocabulary)
 dev_loader = DataLoader(
     dev_dataset,
     collate_fn=dev_dataset.collate_fn,
-    batch_size=64
+    batch_size=32
 )
 test_dataset = GroundTruthDataset(TEST_FILE, vocabulary=vocabulary)
 test_loader = DataLoader(test_dataset, collate_fn=dev_dataset.collate_fn, batch_size=64)
@@ -71,31 +74,42 @@ def create_trainer():
         gradient_clip_val=5,
         callbacks=[
             TQDMProgressBar(),
-            EarlyStopping(monitor="lemma_pre", patience=5, verbose=True, mode="max"),
-            ModelCheckpoint(monitor="lemma_pre", save_top_k=2, mode="max")
-        ],
-        amp_level="01"
+            EarlyStopping(monitor="lemma_cer", patience=5, verbose=True, mode="min", min_delta=0.0005),
+            ModelCheckpoint(monitor="lemma_cer", save_top_k=2, mode="min")
+        ]
     )
+
 
 hyper_params = dict(
         cemb_dim=300, cemb_layers=2, hidden_size=150, num_layers=1,
-        dropout=.3, cell="LSTM", char_cell="RNN", lr=0.0049
+        dropout=.25, cell="GRU", char_cell="RNN", lr=0.0049
 )
 
 for i in range(5):
-    model = Pie(vocabulary, main_task="lemma", use_secondary_tasks_decision=True, **hyper_params)
-    trainer = create_trainer()
-    trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=dev_loader)
-    trainer.save_checkpoint(f"FroWithUse{i}.model")
-    model.freeze()
-    trainer.test(dataloaders=test_loader, model=model)
+    if len(TASKS) > 1:
+        model = Pie(vocabulary, main_task="lemma", use_secondary_tasks_decision=True, mix_with_linear=True,
+                    **hyper_params)
+        trainer = create_trainer()
+        trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=dev_loader)
+        trainer.save_checkpoint(f"FroWithUseMixed{i}.model")
+        model.freeze()
+        trainer.test(dataloaders=test_loader, model=model)
 
-    del model, trainer
+        del model, trainer
+
+        model = Pie(vocabulary, main_task="lemma", use_secondary_tasks_decision=True, **hyper_params)
+        trainer = create_trainer()
+        trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=dev_loader)
+        trainer.save_checkpoint(f"FroWithUse{i}.model")
+        model.freeze()
+        trainer.test(dataloaders=test_loader, model=model)
+
+        del model, trainer
 
     model = Pie(vocabulary, main_task="lemma", use_secondary_tasks_decision=False, **hyper_params)
     trainer = create_trainer()
     trainer.fit(model=model, train_dataloaders=train_loader, val_dataloaders=dev_loader)
-    trainer.save_checkpoint(f"FroWithoutUse{i}.model")
+    trainer.save_checkpoint(f"FroWithoutUse{i}-Secondary{len(TASKS)-1}.model")
     trainer.test(dataloaders=test_loader, model=model)
 
     del model, trainer

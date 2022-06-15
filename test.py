@@ -14,23 +14,37 @@ from tokenizers import Tokenizer
 TOKENIZER_PATH = "./saved_models/fro2/fro.json"
 TRAIN_FILE = "./exp_data/fro/train.tsv"
 DEV_FILE = "./exp_data/fro/dev.tsv"
-TEST_FILE = "./exp_data/fro/test.tsv"
+TEST_FILE = "./exp_data/fro/digluville.tsv"
 CHAR_LEVEL = True
 
 #vocabulary = Vocabulary.from_file("./saved_models/fro2/vocabulary.json")
 
+models = []
+
 model = Pie.load_from_checkpoint(
-    "/home/thibault/dev/tantal/lightning_logs/version_199/checkpoints/epoch=43-step=16544.ckpt",
-    hparams_file="saved_models/fro/with_use/hparams.yaml",
-    vocabulary=Vocabulary.from_file("saved_models/fro/with_use/vocabulary.json")
+    "/home/thibault/dev/tantal/lightning_logs/version_210/checkpoints/epoch=44-step=16920.ckpt",
+    hparams_file="/home/thibault/dev/tantal/lightning_logs/version_210/hparams.yaml",
+    vocabulary=Vocabulary.from_file("/home/thibault/dev/tantal/lightning_logs/version_211/vocabulary.json")
 )
 model.freeze()
-test_dataset = GroundTruthDataset(TEST_FILE, vocabulary=model._vocabulary)
-test_loader = DataLoader(
-    test_dataset,
-    collate_fn=test_dataset.collate_fn,
-    batch_size=64
+models.append(model)
+
+model = Pie.load_from_checkpoint(
+    "/home/thibault/dev/tantal/lightning_logs/version_211/checkpoints/epoch=42-step=16168.ckpt",
+    hparams_file="/home/thibault/dev/tantal/lightning_logs/version_211/hparams.yaml",
+    vocabulary=Vocabulary.from_file("/home/thibault/dev/tantal/lightning_logs/version_211/vocabulary.json")
 )
+model.freeze()
+models.append(model)
+
+model = Pie.load_from_checkpoint(
+    "/home/thibault/dev/tantal/lightning_logs/version_220/checkpoints/epoch=41-step=15792.ckpt",
+    hparams_file="/home/thibault/dev/tantal/lightning_logs/version_220/hparams.yaml",
+    vocabulary=Vocabulary.from_file("/home/thibault/dev/tantal/lightning_logs/version_220/vocabulary.json")
+)
+model.freeze()
+models.append(model)
+
 
 trainer = pl.Trainer(
     gpus=1,
@@ -42,4 +56,10 @@ trainer = pl.Trainer(
         ModelCheckpoint(monitor="acc_lemma", save_top_k=2, mode="max")
     ]
 )
-print(trainer.test(model, dataloaders=test_loader))
+
+for model in models:
+    print(model.hparams)
+    for test_file in ["./exp_data/fro/digluville.tsv", "./exp_data/fro/nca.tsv", "./exp_data/fro/calais.tsv"]:
+        test_dataset = GroundTruthDataset(test_file, vocabulary=model._vocabulary)
+        test_loader = DataLoader(test_dataset, collate_fn=test_dataset.collate_fn, batch_size=64)
+        print(trainer.test(model, dataloaders=test_loader))
