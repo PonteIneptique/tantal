@@ -26,6 +26,7 @@ model = Pie.load_from_checkpoint(
     hparams_file="/home/thibault/dev/tantal/lightning_logs/version_210/hparams.yaml",
     vocabulary=Vocabulary.from_file("/home/thibault/dev/tantal/lightning_logs/version_211/vocabulary.json")
 )
+model.eval()
 model.freeze()
 models.append(model)
 
@@ -34,6 +35,7 @@ model = Pie.load_from_checkpoint(
     hparams_file="/home/thibault/dev/tantal/lightning_logs/version_211/hparams.yaml",
     vocabulary=Vocabulary.from_file("/home/thibault/dev/tantal/lightning_logs/version_211/vocabulary.json")
 )
+model.eval()
 model.freeze()
 models.append(model)
 
@@ -42,6 +44,7 @@ model = Pie.load_from_checkpoint(
     hparams_file="/home/thibault/dev/tantal/lightning_logs/version_220/hparams.yaml",
     vocabulary=Vocabulary.from_file("/home/thibault/dev/tantal/lightning_logs/version_220/vocabulary.json")
 )
+model.eval()
 model.freeze()
 models.append(model)
 

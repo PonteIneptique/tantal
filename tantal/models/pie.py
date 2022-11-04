@@ -589,7 +589,7 @@ class Pie(pl.LightningModule):
             outputs = [outputs]
 
         collated = self._collate_steps_pred_gt(outputs)
-        print(collated["lemma"])
+        # print(collated["lemma"])
         for task, matrix in self._finalize_metrics(collated, confusion_matrix=True).items():
             print("====TASK====")
             print_table(matrix)
@@ -602,7 +602,7 @@ class Pie(pl.LightningModule):
             threshold=0.001,
             verbose=True,
             factor=.6,
-            patience=2,
+            patience=3,
             min_lr=1e-6,
         )
         return (

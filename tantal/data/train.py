@@ -9,13 +9,15 @@ from tokenizers import Tokenizer, Encoding
 
 from tantal.data.vocabulary import Task, Vocabulary, get_word_groups
 from tantal.data.batch import batchify, batchify_tokens
+from tantal.noise import UppercaseNoise, BaseNoise
 
 
 class GroundTruthDataset(Dataset):
     def __init__(
         self,
         annotations_file: str,
-        vocabulary: Vocabulary
+        vocabulary: Vocabulary,
+        noise: Optional[List[BaseNoise]] = None
     ):
         self.annotation_file: str = annotations_file
         self.vocabulary: Vocabulary = vocabulary
@@ -26,6 +28,8 @@ class GroundTruthDataset(Dataset):
         self.pad_index = self.tokenizer.token_to_id("[PAD]")
         self.bos_index = self.tokenizer.token_to_id("[BOS]")
         self.eos_index = self.tokenizer.token_to_id("[EOS]")
+
+        self.noise_creators: List[BaseNoise] = noise or []
 
     def downscale(self, ratio: float, shuffle: bool = False) -> int:
         end = int(len(self.annotations) * ratio)
@@ -79,6 +83,11 @@ class GroundTruthDataset(Dataset):
     def __getitem__(self, idx):
         sentence: Dict[str, List[str]] = self.annotations[idx]
 
+        tokens = sentence["token"]
+        for noise_creator in self.noise_creators:
+            if noise_creator.corresponds(tokens) and noise_creator.random():
+                tokens = noise_creator.apply(tokens)
+
         tokens, token_length = self.vocabulary.encode_input(sentence["token"])
 
         categoricals = {
@@ -97,7 +106,10 @@ class GroundTruthDataset(Dataset):
             )).items()
         }
 
-        return {"token": tokens, "token__length": token_length}, {
+        return {
+            "token": tokens,
+            "token__length": token_length
+               }, {
             "categoricals": categoricals,
             "non_categoricals": non_categoricals
         }
