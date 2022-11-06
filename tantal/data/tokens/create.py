@@ -113,7 +113,6 @@ def train_for_bytes(
     if canonical:
         normalize_mode = "NFKD"
     for sentence in iterator_fn(*iterator_args):
-        print(sentence)
         chars = chars.union(set(normalize(normalize_mode, sentence+sentence.upper())))
 
     chars = sorted(list("".join(list(chars)).strip()))

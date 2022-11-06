@@ -34,8 +34,8 @@ def parse_file(file: str) -> Iterable[str]:
             for idx, line in enumerate(f):
                 if idx == 0:
                     continue
-                if len(line.strip().split()) > 2:
-                    form, lemma, *_ = line.strip().split()
+                if len(line.strip().split()) >= 2:
+                    form, lemma, *_ = (*line.strip().split(), ())
                     out_form[-1].append(form)
                     out_lemma[-1].append(lemma)
                 elif out_form[-1]:
